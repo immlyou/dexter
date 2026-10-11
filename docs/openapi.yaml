@@ -1,0 +1,1173 @@
+openapi: 3.0.3
+
+info:
+  title: Dexter API
+  version: 1.0.0
+  description: |
+    Dexter 金融研究 AI Agent API
+
+    ## 功能概述
+
+    Dexter API 提供完整的金融研究 AI 代理服務,支援:
+    - 自然語言查詢金融數據
+    - 實時執行步驟追蹤
+    - 多 LLM 模型支援
+    - 會話管理和歷史記錄
+
+    ## 認證方式
+
+    支援兩種認證方式:
+
+    ### JWT Token (用戶認證)
+    ```
+    Authorization: Bearer <jwt_token>
+    ```
+    用於用戶註冊登入後的會話、訪問個人資源、WebSocket 連接認證
+
+    ### API Key (服務認證)
+    ```
+    X-API-Key: <api_key>
+    ```
+    用於第三方服務集成、CLI 工具、自動化腳本
+
+    ## 速率限制
+
+    根據用戶方案不同有不同的限制:
+    - **免費方案**: 100 requests/hour, 10 queries/day, 1M tokens/month
+    - **Pro 方案**: 1000 requests/hour, 100 queries/day, 10M tokens/month
+    - **Enterprise 方案**: 自定義限制
+
+    所有響應包含速率限制 headers:
+    - `X-RateLimit-Limit`: 限制總數
+    - `X-RateLimit-Remaining`: 剩餘次數
+    - `X-RateLimit-Reset`: 重置時間戳
+
+  contact:
+    name: API Support
+    email: api@dexter.ai
+    url: https://docs.dexter.ai
+
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: https://api.dexter.ai
+    description: Production server
+  - url: https://staging.api.dexter.ai
+    description: Staging server
+  - url: http://localhost:3000
+    description: Development server
+
+tags:
+  - name: Auth
+    description: 認證相關端點
+  - name: Sessions
+    description: 會話管理
+  - name: Queries
+    description: 查詢執行和結果獲取
+  - name: Models
+    description: 模型管理
+  - name: Users
+    description: 用戶管理
+  - name: Health
+    description: 健康檢查和系統狀態
+
+security:
+  - BearerAuth: []
+  - ApiKeyAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT token from /api/auth/login or /api/auth/register
+
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key from user settings
+
+  schemas:
+    # User Schemas
+    User:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+          example: "usr_abc123def456"
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        name:
+          type: string
+          example: "John Doe"
+        plan:
+          type: string
+          enum: [free, pro, enterprise]
+          example: "free"
+        preferences:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+          example: "2026-02-11T10:00:00Z"
+        updatedAt:
+          type: string
+          format: date-time
+          example: "2026-02-11T10:00:00Z"
+
+    UserUsage:
+      type: object
+      properties:
+        queriesThisMonth:
+          type: integer
+          example: 45
+        queriesLimit:
+          type: integer
+          example: 100
+        tokensThisMonth:
+          type: integer
+          example: 250000
+        tokensLimit:
+          type: integer
+          example: 1000000
+
+    # Auth Schemas
+    RegisterRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        password:
+          type: string
+          format: password
+          minLength: 8
+          example: "SecurePass123"
+        name:
+          type: string
+          example: "John Doe"
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: "user@example.com"
+        password:
+          type: string
+          format: password
+          example: "SecurePass123"
+
+    AuthResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          format: uuid
+        token:
+          type: string
+          description: JWT access token
+        refreshToken:
+          type: string
+          description: Refresh token for obtaining new access token
+        user:
+          $ref: '#/components/schemas/User'
+
+    # Session Schemas
+    Session:
+      type: object
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+          example: "ses_abc123def456"
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          example: "Tech Stock Analysis"
+        model:
+          type: string
+          example: "claude-sonnet-4-5"
+        provider:
+          type: string
+          example: "anthropic"
+        config:
+          type: object
+          properties:
+            maxIterations:
+              type: integer
+              example: 10
+        queryCount:
+          type: integer
+          example: 5
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateSessionRequest:
+      type: object
+      required:
+        - model
+        - provider
+      properties:
+        name:
+          type: string
+          example: "Tech Stock Analysis"
+        model:
+          type: string
+          example: "claude-sonnet-4-5"
+        provider:
+          type: string
+          example: "anthropic"
+        maxIterations:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 10
+
+    UpdateSessionRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        model:
+          type: string
+        provider:
+          type: string
+        maxIterations:
+          type: integer
+
+    SessionList:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    # Query Schemas
+    Query:
+      type: object
+      properties:
+        queryId:
+          type: string
+          format: uuid
+          example: "qry_xyz789abc123"
+        sessionId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        queryText:
+          type: string
+          example: "What is Apple's revenue growth over the past 5 years?"
+        status:
+          type: string
+          enum: [processing, completed, error, cancelled]
+          example: "completed"
+        answer:
+          type: string
+          example: "Apple's revenue has grown from $274B in 2020 to $394B in 2024..."
+        iterations:
+          type: integer
+          example: 3
+        totalTime:
+          type: integer
+          description: Total execution time in milliseconds
+          example: 12500
+        tokenUsage:
+          $ref: '#/components/schemas/TokenUsage'
+        tokensPerSecond:
+          type: number
+          format: float
+          example: 64.5
+        errorMessage:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+
+    CreateQueryRequest:
+      type: object
+      required:
+        - sessionId
+        - query
+      properties:
+        sessionId:
+          type: string
+          format: uuid
+          example: "ses_abc123def456"
+        query:
+          type: string
+          minLength: 1
+          example: "What is Apple's revenue growth over the past 5 years?"
+
+    CreateQueryResponse:
+      type: object
+      properties:
+        queryId:
+          type: string
+          format: uuid
+        sessionId:
+          type: string
+          format: uuid
+        queryText:
+          type: string
+        status:
+          type: string
+          enum: [processing]
+        createdAt:
+          type: string
+          format: date-time
+        streamUrl:
+          type: string
+          format: uri
+          description: WebSocket URL for real-time event streaming
+          example: "wss://api.dexter.ai/stream?queryId=qry_xyz789&token=..."
+
+    QueryEvent:
+      type: object
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        queryId:
+          type: string
+          format: uuid
+        type:
+          type: string
+          enum:
+            - thinking
+            - tool_start
+            - tool_progress
+            - tool_end
+            - tool_error
+            - tool_limit
+            - context_cleared
+            - answer_start
+            - done
+        data:
+          type: object
+          description: Event-specific data
+        timestamp:
+          type: string
+          format: date-time
+
+    QueryEventList:
+      type: object
+      properties:
+        queryId:
+          type: string
+          format: uuid
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/QueryEvent'
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    TokenUsage:
+      type: object
+      properties:
+        inputTokens:
+          type: integer
+          example: 2500
+        outputTokens:
+          type: integer
+          example: 800
+        totalTokens:
+          type: integer
+          example: 3300
+
+    ToolCall:
+      type: object
+      properties:
+        tool:
+          type: string
+          example: "financial_search"
+        args:
+          type: object
+          additionalProperties: true
+        result:
+          type: string
+
+    # Model Schemas
+    Model:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "claude-sonnet-4-5"
+        name:
+          type: string
+          example: "Claude Sonnet 4.5"
+        provider:
+          type: string
+          example: "anthropic"
+        capabilities:
+          type: array
+          items:
+            type: string
+          example: ["chat", "tools", "cache"]
+        contextWindow:
+          type: integer
+          example: 200000
+        pricing:
+          type: object
+          properties:
+            input:
+              type: number
+              format: float
+              description: Price per million input tokens
+            output:
+              type: number
+              format: float
+              description: Price per million output tokens
+            unit:
+              type: string
+
+    Provider:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "anthropic"
+        name:
+          type: string
+          example: "Anthropic"
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/Model'
+
+    ModelList:
+      type: object
+      properties:
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/Provider'
+
+    # API Key Schemas
+    APIKey:
+      type: object
+      properties:
+        keyId:
+          type: string
+          format: uuid
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        lastUsed:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateAPIKeyRequest:
+      type: object
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          example: "Production CLI Key"
+        expiresIn:
+          type: integer
+          description: Expiration time in seconds (optional)
+          example: 2592000
+
+    CreateAPIKeyResponse:
+      type: object
+      properties:
+        keyId:
+          type: string
+          format: uuid
+        key:
+          type: string
+          description: Full API key (only shown once)
+          example: "dex_sk_live_abc123def456..."
+        name:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    # Common Schemas
+    Pagination:
+      type: object
+      properties:
+        total:
+          type: integer
+        limit:
+          type: integer
+        offset:
+          type: integer
+        hasMore:
+          type: boolean
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              example: "VALIDATION_FAILED"
+            message:
+              type: string
+              example: "Request validation failed"
+            details:
+              type: object
+              additionalProperties: true
+            timestamp:
+              type: string
+              format: date-time
+            requestId:
+              type: string
+              format: uuid
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        version:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        services:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [healthy, unhealthy]
+            redis:
+              type: string
+              enum: [healthy, unhealthy]
+            llm:
+              type: string
+              enum: [healthy, unhealthy]
+
+  responses:
+    BadRequest:
+      description: Bad Request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    NotFound:
+      description: Not Found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    RateLimitExceeded:
+      description: Too Many Requests
+      headers:
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Request limit per time window
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Remaining requests in current window
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Unix timestamp when the rate limit resets
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until rate limit reset
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+    InternalServerError:
+      description: Internal Server Error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+paths:
+  # Auth Endpoints
+  /api/auth/register:
+    post:
+      tags:
+        - Auth
+      summary: Register new user
+      description: Create a new user account
+      operationId: registerUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: User already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: User login
+      description: Authenticate user and get access token
+      operationId: loginUser
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Refresh access token
+      description: Get new access token using refresh token
+      operationId: refreshToken
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: User logout
+      description: Invalidate refresh token
+      operationId: logoutUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+
+  # Session Endpoints
+  /api/sessions:
+    get:
+      tags:
+        - Sessions
+      summary: List user sessions
+      description: Get all sessions for the authenticated user
+      operationId: listSessions
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [createdAt, updatedAt]
+            default: updatedAt
+        - name: order
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Sessions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags:
+        - Sessions
+      summary: Create new session
+      description: Create a new research session
+      operationId: createSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSessionRequest'
+      responses:
+        '201':
+          description: Session created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/sessions/{sessionId}:
+    get:
+      tags:
+        - Sessions
+      summary: Get session details
+      description: Get detailed information about a session
+      operationId: getSession
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Session retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    patch:
+      tags:
+        - Sessions
+      summary: Update session
+      description: Update session configuration
+      operationId: updateSession
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSessionRequest'
+      responses:
+        '200':
+          description: Session updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Sessions
+      summary: Delete session
+      description: Delete a session and all its queries
+      operationId: deleteSession
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: Session deleted successfully
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Query Endpoints
+  /api/queries:
+    post:
+      tags:
+        - Queries
+      summary: Submit new query
+      description: Submit a financial research query for execution
+      operationId: createQuery
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateQueryRequest'
+      responses:
+        '201':
+          description: Query submitted successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateQueryResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+
+  /api/queries/{queryId}:
+    get:
+      tags:
+        - Queries
+      summary: Get query result
+      description: Get query status and result
+      operationId: getQuery
+      parameters:
+        - name: queryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Query retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Query'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    delete:
+      tags:
+        - Queries
+      summary: Cancel query
+      description: Cancel a processing query
+      operationId: cancelQuery
+      parameters:
+        - name: queryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Query cancelled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  queryId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [cancelled]
+                  message:
+                    type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/queries/{queryId}/events:
+    get:
+      tags:
+        - Queries
+      summary: Get query events
+      description: Get all execution events for a query
+      operationId: getQueryEvents
+      parameters:
+        - name: queryId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Events retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryEventList'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Model Endpoints
+  /api/models:
+    get:
+      tags:
+        - Models
+      summary: List available models
+      description: Get all available LLM models
+      operationId: listModels
+      responses:
+        '200':
+          description: Models retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelList'
+
+  /api/models/{provider}/{modelId}:
+    get:
+      tags:
+        - Models
+      summary: Get model details
+      description: Get detailed information about a specific model
+      operationId: getModel
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Model retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Model'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # User Endpoints
+  /api/users/me:
+    get:
+      tags:
+        - Users
+      summary: Get current user
+      description: Get authenticated user information
+      operationId: getCurrentUser
+      responses:
+        '200':
+          description: User retrieved successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/User'
+                  - type: object
+                    properties:
+                      usage:
+                        $ref: '#/components/schemas/UserUsage'
+                      apiKeys:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/APIKey'
+
+    patch:
+      tags:
+        - Users
+      summary: Update user
+      description: Update user information
+      operationId: updateUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                preferences:
+                  type: object
+      responses:
+        '200':
+          description: User updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+
+  /api/users/me/api-keys:
+    post:
+      tags:
+        - Users
+      summary: Create API key
+      description: Create a new API key
+      operationId: createAPIKey
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateAPIKeyRequest'
+      responses:
+        '201':
+          description: API key created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateAPIKeyResponse'
+
+  /api/users/me/api-keys/{keyId}:
+    delete:
+      tags:
+        - Users
+      summary: Delete API key
+      description: Delete an API key
+      operationId: deleteAPIKey
+      parameters:
+        - name: keyId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '204':
+          description: API key deleted successfully
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # Health Endpoints
+  /api/health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Check API health status
+      operationId: healthCheck
+      security: []
+      responses:
+        '200':
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'

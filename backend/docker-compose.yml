@@ -1,0 +1,54 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: dexter-db
+    environment:
+      POSTGRES_DB: dexter
+      POSTGRES_USER: dexter
+      POSTGRES_PASSWORD: dexter123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dexter"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Dexter Backend API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: dexter-api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://dexter:dexter123@postgres:5432/dexter
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      JWT_EXPIRES_IN: 15m
+      REFRESH_TOKEN_EXPIRES_IN: 30d
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
+      PORT: 8000
+      NODE_ENV: production
+      # LLM API Keys (from host environment)
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      FINANCIAL_DATASETS_API_KEY: ${FINANCIAL_DATASETS_API_KEY}
+      EXASEARCH_API_KEY: ${EXASEARCH_API_KEY}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      # Mount parent Dexter project for Agent code
+      - ../src:/app/parent-src:ro
+
+volumes:
+  postgres_data:
+    driver: local

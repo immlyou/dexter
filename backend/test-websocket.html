@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dexter WebSocket Test</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        h1 {
+            color: #333;
+            margin-top: 0;
+        }
+        h2 {
+            color: #666;
+            border-bottom: 2px solid #e0e0e0;
+            padding-bottom: 10px;
+        }
+        input, button {
+            padding: 10px;
+            margin: 5px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #45a049;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .status.connected {
+            background: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background: #f8d7da;
+            color: #721c24;
+        }
+        .status.authenticated {
+            background: #cce5ff;
+            color: #004085;
+        }
+        #events {
+            max-height: 500px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            background: #fafafa;
+        }
+        .event {
+            padding: 8px;
+            margin: 5px 0;
+            border-left: 4px solid #4CAF50;
+            background: white;
+            border-radius: 4px;
+        }
+        .event.thinking {
+            border-left-color: #2196F3;
+        }
+        .event.tool_start {
+            border-left-color: #FF9800;
+        }
+        .event.tool_end {
+            border-left-color: #4CAF50;
+        }
+        .event.tool_error {
+            border-left-color: #f44336;
+        }
+        .event.done {
+            border-left-color: #9C27B0;
+            font-weight: bold;
+        }
+        .event-type {
+            font-weight: bold;
+            color: #333;
+        }
+        .event-time {
+            color: #999;
+            font-size: 12px;
+        }
+        .event-data {
+            margin-top: 5px;
+            color: #666;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+        .answer {
+            background: #e8f5e9;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <h1>🚀 Dexter WebSocket Test Client</h1>
+
+    <div class="container">
+        <h2>Connection</h2>
+        <div id="status" class="status disconnected">Disconnected</div>
+        <input type="text" id="wsUrl" value="ws://localhost:8000/stream" placeholder="WebSocket URL" style="width: 300px;">
+        <button onclick="connect()">Connect</button>
+        <button onclick="disconnect()">Disconnect</button>
+    </div>
+
+    <div class="container">
+        <h2>Authentication</h2>
+        <input type="text" id="token" placeholder="JWT Token" style="width: 500px;">
+        <button onclick="authenticate()">Authenticate</button>
+    </div>
+
+    <div class="container">
+        <h2>Subscribe to Query</h2>
+        <input type="text" id="queryId" placeholder="Query ID (UUID)" style="width: 400px;">
+        <button onclick="subscribe()">Subscribe</button>
+        <button onclick="unsubscribe()">Unsubscribe</button>
+    </div>
+
+    <div class="container">
+        <h2>Events</h2>
+        <button onclick="clearEvents()">Clear Events</button>
+        <div id="events"></div>
+    </div>
+
+    <script>
+        let ws = null;
+
+        function connect() {
+            const url = document.getElementById('wsUrl').value;
+
+            ws = new WebSocket(url);
+
+            ws.onopen = () => {
+                updateStatus('connected', 'Connected');
+                addEvent('system', 'WebSocket connection established', {});
+            };
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                handleMessage(data);
+            };
+
+            ws.onclose = () => {
+                updateStatus('disconnected', 'Disconnected');
+                addEvent('system', 'WebSocket connection closed', {});
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                addEvent('error', 'WebSocket error', { error: error.message });
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function authenticate() {
+            const token = document.getElementById('token').value;
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Please connect first');
+                return;
+            }
+
+            ws.send(JSON.stringify({
+                type: 'authenticate',
+                token: token
+            }));
+        }
+
+        function subscribe() {
+            const queryId = document.getElementById('queryId').value;
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Please connect first');
+                return;
+            }
+
+            ws.send(JSON.stringify({
+                type: 'subscribe',
+                queryId: queryId
+            }));
+        }
+
+        function unsubscribe() {
+            const queryId = document.getElementById('queryId').value;
+
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                alert('Please connect first');
+                return;
+            }
+
+            ws.send(JSON.stringify({
+                type: 'unsubscribe',
+                queryId: queryId
+            }));
+        }
+
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'authenticated':
+                    updateStatus('authenticated', `Authenticated (User: ${data.userId})`);
+                    addEvent('system', 'Authentication successful', data);
+                    break;
+
+                case 'subscribed':
+                    addEvent('system', 'Subscribed to query', data);
+                    break;
+
+                case 'unsubscribed':
+                    addEvent('system', 'Unsubscribed from query', data);
+                    break;
+
+                case 'event':
+                    addEvent(data.event.type, `Query Event: ${data.event.type}`, data.event.data, data.timestamp);
+                    break;
+
+                case 'error':
+                    addEvent('error', 'Error', data.error);
+                    break;
+
+                default:
+                    addEvent('unknown', 'Unknown message', data);
+            }
+        }
+
+        function addEvent(type, message, data, timestamp) {
+            const eventsDiv = document.getElementById('events');
+            const eventDiv = document.createElement('div');
+            eventDiv.className = `event ${type}`;
+
+            const time = timestamp ? new Date(timestamp).toLocaleTimeString() : new Date().toLocaleTimeString();
+
+            let html = `
+                <div class="event-type">${type.toUpperCase()}</div>
+                <div class="event-time">${time}</div>
+                <div class="event-data">${message}</div>
+            `;
+
+            if (data) {
+                if (type === 'done' && data.answer) {
+                    html += `<div class="answer">${data.answer}</div>`;
+                } else {
+                    html += `<div class="event-data">${JSON.stringify(data, null, 2)}</div>`;
+                }
+            }
+
+            eventDiv.innerHTML = html;
+            eventsDiv.insertBefore(eventDiv, eventsDiv.firstChild);
+        }
+
+        function clearEvents() {
+            document.getElementById('events').innerHTML = '';
+        }
+
+        function updateStatus(className, text) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.className = `status ${className}`;
+            statusDiv.textContent = text;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .card {
+            border: 1px solid #ddd;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        .success { background-color: #d4edda; }
+        .info { background-color: #d1ecf1; }
+    </style>
+</head>
+<body>
+    <h1>🎉 Dexter 服務測試頁面</h1>
+
+    <div class="card success">
+        <h2>✅ 前端伺服器運行中</h2>
+        <p>如果你能看到這個頁面，說明 Vite 開發伺服器正常運行。</p>
+        <p><strong>地址:</strong> http://localhost:5173</p>
+    </div>
+
+    <div class="card info">
+        <h2>🔍 後端 API 測試</h2>
+        <button onclick="testBackend()">測試後端連接</button>
+        <div id="backend-result" style="margin-top: 10px;"></div>
+    </div>
+
+    <div class="card info">
+        <h2>📝 主應用狀態</h2>
+        <p>主應用地址: <a href="/">http://localhost:5173/</a></p>
+        <p>如果主頁面是白色的，可能是 React 應用有錯誤。</p>
+        <p>請打開瀏覽器開發者工具 (F12) 查看控制台錯誤。</p>
+    </div>
+
+    <script>
+        async function testBackend() {
+            const result = document.getElementById('backend-result');
+            result.innerHTML = '測試中...';
+
+            try {
+                const response = await fetch('http://localhost:8000/health');
+                const data = await response.json();
+                result.innerHTML = `
+                    <div style="color: green;">
+                        ✅ 後端 API 正常<br>
+                        狀態: ${data.status}<br>
+                        版本: ${data.version}<br>
+                        時間: ${data.timestamp}
+                    </div>
+                `;
+            } catch (error) {
+                result.innerHTML = `
+                    <div style="color: red;">
+                        ❌ 無法連接後端<br>
+                        錯誤: ${error.message}
+                    </div>
+                `;
+            }
+        }
+    </script>
+</body>
+</html>
