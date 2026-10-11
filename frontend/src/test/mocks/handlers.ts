@@ -9,7 +9,9 @@ export const handlers = [
       token: 'mock-access-token',
       refreshToken: 'mock-refresh-token',
       user: {
-        id: 'user-1',
+        userId: 'user-1',
+        plan: 'free',
+        createdAt: '2026-02-11T00:00:00.000Z',
         email: 'test@example.com',
         name: 'Test User',
       },
@@ -21,7 +23,9 @@ export const handlers = [
       token: 'mock-access-token',
       refreshToken: 'mock-refresh-token',
       user: {
-        id: 'user-1',
+        userId: 'user-1',
+        plan: 'free',
+        createdAt: '2026-02-11T00:00:00.000Z',
         email: 'test@example.com',
         name: 'Test User',
       },
@@ -44,22 +48,20 @@ export const handlers = [
     return HttpResponse.json({
       sessions: [
         {
-          id: 'session-1',
+          sessionId: 'session-1',
           model: 'gpt-4',
           provider: 'openai',
           createdAt: '2026-02-11T00:00:00.000Z',
           updatedAt: '2026-02-11T00:00:00.000Z',
         },
       ],
-      total: 1,
-      limit: 50,
-      offset: 0,
+      pagination: { total: 1, limit: 50, offset: 0 },
     });
   }),
 
   http.post(`${API_BASE_URL}/api/sessions`, async () => {
     return HttpResponse.json({
-      id: 'session-new',
+      sessionId: 'session-new',
       model: 'gpt-4',
       provider: 'openai',
       createdAt: new Date().toISOString(),
@@ -69,11 +71,23 @@ export const handlers = [
 
   http.get(`${API_BASE_URL}/api/sessions/:id`, async ({ params }) => {
     return HttpResponse.json({
-      id: params.id,
+      sessionId: params.id,
       model: 'gpt-4',
       provider: 'openai',
       createdAt: '2026-02-11T00:00:00.000Z',
       updatedAt: '2026-02-11T00:00:00.000Z',
+    });
+  }),
+
+  http.patch(`${API_BASE_URL}/api/sessions/:id`, async ({ params, request }) => {
+    const updates = (await request.json()) as Record<string, unknown>;
+    return HttpResponse.json({
+      sessionId: params.id,
+      model: 'gpt-4',
+      provider: 'openai',
+      createdAt: '2026-02-11T00:00:00.000Z',
+      updatedAt: new Date().toISOString(),
+      ...updates,
     });
   }),
 
@@ -91,9 +105,9 @@ export const handlers = [
 
   http.get(`${API_BASE_URL}/api/queries/:id`, async ({ params }) => {
     return HttpResponse.json({
-      id: params.id,
+      queryId: params.id,
       sessionId: 'session-1',
-      query: 'What is the revenue of AAPL?',
+      queryText: 'What is the revenue of AAPL?',
       status: 'completed',
       createdAt: '2026-02-11T00:00:00.000Z',
       updatedAt: '2026-02-11T00:00:00.000Z',
@@ -143,7 +157,8 @@ export const handlers = [
   // User endpoints
   http.get(`${API_BASE_URL}/api/users/me`, async () => {
     return HttpResponse.json({
-      id: 'user-1',
+      userId: 'user-1',
+      plan: 'free',
       email: 'test@example.com',
       name: 'Test User',
       createdAt: '2026-02-11T00:00:00.000Z',

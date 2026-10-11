@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { http, HttpResponse, delay } from 'msw';
+import { server } from '../../test/mocks/server';
+import { renderHook, waitFor, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   useSessions,
@@ -41,7 +43,7 @@ describe('useSessions', () => {
       });
 
       expect(result.current.sessions).toHaveLength(1);
-      expect(result.current.sessions[0].id).toBe('session-1');
+      expect(result.current.sessions[0].sessionId).toBe('session-1');
       expect(result.current.sessions[0].model).toBe('gpt-4');
     });
 
@@ -86,7 +88,7 @@ describe('useSessions', () => {
       });
 
       // Pagination info from MSW mock
-      expect(result.current.pagination).toBeUndefined();
+      expect(result.current.pagination).toEqual({ total: 1, limit: 50, offset: 0 });
     });
   });
 
@@ -103,7 +105,7 @@ describe('useSessions', () => {
       });
 
       expect(result.current.session).toBeDefined();
-      expect(result.current.session?.id).toBe('session-1');
+      expect(result.current.session?.sessionId).toBe('session-1');
       expect(result.current.session?.model).toBe('gpt-4');
     });
 
@@ -130,8 +132,8 @@ describe('useSessions', () => {
         expect(result2.current.isLoading).toBe(false);
       });
 
-      expect(result1.current.session?.id).toBe('session-1');
-      expect(result2.current.session?.id).toBe('session-2');
+      expect(result1.current.session?.sessionId).toBe('session-1');
+      expect(result2.current.session?.sessionId).toBe('session-2');
     });
   });
 
@@ -147,7 +149,7 @@ describe('useSessions', () => {
       });
 
       expect(newSession).toBeDefined();
-      expect(newSession.id).toBe('session-new');
+      expect(newSession.sessionId).toBe('session-new');
       expect(newSession.model).toBe('gpt-4');
     });
 
@@ -184,19 +186,31 @@ describe('useSessions', () => {
     });
 
     it('should handle creation error', async () => {
+      server.use(
+        http.post('http://localhost:3000/api/sessions', () =>
+          HttpResponse.json(
+            { error: { code: 'INTERNAL_ERROR', message: 'boom', timestamp: new Date().toISOString() } },
+            { status: 500 }
+          )
+        )
+      );
+
       const { result } = renderHook(() => useCreateSession(), {
         wrapper: createWrapper(),
       });
 
       expect(result.current.error).toBeNull();
 
-      // The mutation will succeed with our mock, but in real scenarios we'd test errors
-      await result.current.mutateAsync({
-        model: 'gpt-4',
-        provider: 'openai',
+      await act(async () => {
+        await result.current
+          .mutateAsync({ model: 'gpt-4', provider: 'openai' })
+          .catch(() => undefined);
       });
 
-      expect(result.current.isSuccess).toBe(true);
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      expect(result.current.error).not.toBeNull();
     });
 
     it('should track pending state', async () => {
@@ -206,15 +220,36 @@ describe('useSessions', () => {
 
       expect(result.current.isPending).toBe(false);
 
-      const promise = result.current.mutateAsync({
-        model: 'gpt-4',
-        provider: 'openai',
+      // Delay the response so the pending state is observable
+      server.use(
+        http.post('http://localhost:3000/api/sessions', async () => {
+          await delay(100);
+          return HttpResponse.json({
+            sessionId: 'session-new',
+            model: 'gpt-4',
+            provider: 'openai',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        })
+      );
+
+      let promise!: Promise<unknown>;
+      act(() => {
+        promise = result.current.mutateAsync({
+          model: 'gpt-4',
+          provider: 'openai',
+        });
       });
 
       // Should be pending during mutation
-      expect(result.current.isPending).toBe(true);
+      await waitFor(() => {
+        expect(result.current.isPending).toBe(true);
+      });
 
-      await promise;
+      await act(async () => {
+        await promise;
+      });
 
       await waitFor(() => {
         expect(result.current.isPending).toBe(false);
@@ -274,9 +309,13 @@ describe('useSessions', () => {
         wrapper: createWrapper(),
       });
 
-      await result.current.mutateAsync('session-1');
+      await act(async () => {
+        await result.current.mutateAsync('session-1');
+      });
 
-      expect(result.current.isSuccess).toBe(true);
+      await waitFor(() => {
+        expect(result.current.isSuccess).toBe(true);
+      });
     });
 
     it('should invalidate sessions query after deletion', async () => {
@@ -296,22 +335,38 @@ describe('useSessions', () => {
         wrapper,
       });
 
-      await deleteResult.current.mutateAsync('session-1');
+      await act(async () => {
+        await deleteResult.current.mutateAsync('session-1');
+      });
 
       // Should refetch sessions list
-      expect(deleteResult.current.isSuccess).toBe(true);
+      await waitFor(() => {
+        expect(deleteResult.current.isSuccess).toBe(true);
+      });
     });
 
     it('should handle deletion error', async () => {
+      server.use(
+        http.delete('http://localhost:3000/api/sessions/:id', () =>
+          HttpResponse.json(
+            { error: { code: 'INTERNAL_ERROR', message: 'boom', timestamp: new Date().toISOString() } },
+            { status: 500 }
+          )
+        )
+      );
+
       const { result } = renderHook(() => useDeleteSession(), {
         wrapper: createWrapper(),
       });
 
-      // With mock, deletion will succeed
-      await result.current.mutateAsync('session-1');
+      await act(async () => {
+        await result.current.mutateAsync('session-1').catch(() => undefined);
+      });
 
-      expect(result.current.error).toBeNull();
-      expect(result.current.isSuccess).toBe(true);
+      await waitFor(() => {
+        expect(result.current.isError).toBe(true);
+      });
+      expect(result.current.error).not.toBeNull();
     });
   });
 

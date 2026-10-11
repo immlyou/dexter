@@ -1,5 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { renderHook, waitFor, act } from '@testing-library/react';
+import { http, HttpResponse, delay } from 'msw';
+import { server } from '../../test/mocks/server';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useAuth } from '../useAuth';
 import type { LoginRequest, RegisterRequest } from '../../types/api';
@@ -19,9 +21,20 @@ const createWrapper = () => {
 };
 
 describe('useAuth', () => {
+  const originalLocation = window.location;
+
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    // Some tests replace window.location; restore it so later tests (and MSW) resolve URLs correctly
+    Object.defineProperty(window, 'location', {
+      value: originalLocation,
+      writable: true,
+      configurable: true,
+    });
   });
 
   describe('Initial State', () => {
@@ -85,12 +98,31 @@ describe('useAuth', () => {
         password: 'password123',
       };
 
-      const loginPromise = result.current.login(loginData);
+      // Delay the response so the pending state is observable
+      server.use(
+        http.post('http://localhost:3000/api/auth/login', async () => {
+          await delay(100);
+          return HttpResponse.json({
+            token: 'mock-access-token',
+            refreshToken: 'mock-refresh-token',
+            user: { userId: 'user-1', email: 'test@example.com', name: 'Test User', plan: 'free', createdAt: '2026-02-11T00:00:00.000Z' },
+          });
+        })
+      );
+
+      let loginPromise!: Promise<unknown>;
+      act(() => {
+        loginPromise = result.current.login(loginData);
+      });
 
       // Check loading state
-      expect(result.current.isLoggingIn).toBe(true);
+      await waitFor(() => {
+        expect(result.current.isLoggingIn).toBe(true);
+      });
 
-      await loginPromise;
+      await act(async () => {
+        await loginPromise;
+      });
 
       await waitFor(() => {
         expect(result.current.isLoggingIn).toBe(false);
@@ -169,12 +201,31 @@ describe('useAuth', () => {
         password: 'password123',
       };
 
-      const registerPromise = result.current.register(registerData);
+      // Delay the response so the pending state is observable
+      server.use(
+        http.post('http://localhost:3000/api/auth/register', async () => {
+          await delay(100);
+          return HttpResponse.json({
+            token: 'mock-access-token',
+            refreshToken: 'mock-refresh-token',
+            user: { userId: 'user-1', email: 'test@example.com', name: 'Test User', plan: 'free', createdAt: '2026-02-11T00:00:00.000Z' },
+          });
+        })
+      );
+
+      let registerPromise!: Promise<unknown>;
+      act(() => {
+        registerPromise = result.current.register(registerData);
+      });
 
       // Check loading state
-      expect(result.current.isRegistering).toBe(true);
+      await waitFor(() => {
+        expect(result.current.isRegistering).toBe(true);
+      });
 
-      await registerPromise;
+      await act(async () => {
+        await registerPromise;
+      });
 
       await waitFor(() => {
         expect(result.current.isRegistering).toBe(false);
@@ -235,9 +286,11 @@ describe('useAuth', () => {
 
       // Mock window.location.href
       delete (window as any).location;
-      (window as any).location = { href: '', reload: vi.fn() };
+      (window as any).location = { href: 'http://localhost:3000/', reload: vi.fn() };
 
-      await result.current.logout();
+      await act(async () => {
+        await result.current.logout();
+      });
 
       // Check state cleared
       expect(result.current.isAuthenticated).toBe(false);
@@ -255,9 +308,11 @@ describe('useAuth', () => {
 
       // Mock window.location
       delete (window as any).location;
-      (window as any).location = { href: '', reload: vi.fn() };
+      (window as any).location = { href: 'http://localhost:3000/', reload: vi.fn() };
 
-      await result.current.logout();
+      await act(async () => {
+        await result.current.logout();
+      });
 
       // Logout should have been called (verified by MSW handler)
       expect(result.current.isAuthenticated).toBe(false);
@@ -301,9 +356,11 @@ describe('useAuth', () => {
 
       // Mock window.location
       delete (window as any).location;
-      (window as any).location = { href: '', reload: vi.fn() };
+      (window as any).location = { href: 'http://localhost:3000/', reload: vi.fn() };
 
-      await result.current.logout();
+      await act(async () => {
+        await result.current.logout();
+      });
 
       expect(localStorage.getItem('access_token')).toBeNull();
       expect(localStorage.getItem('refresh_token')).toBeNull();

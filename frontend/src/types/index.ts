@@ -101,13 +101,7 @@ export interface AgentMessage {
 export type Message = UserMessage | AgentMessage;
 
 // Session Types
-export interface Session {
-  id: string;
-  model: string;
-  provider: string;
-  createdAt: string;
-  updatedAt: string;
-}
+export type { Session } from './api';
 
 // Model Types
 export interface ModelProvider {

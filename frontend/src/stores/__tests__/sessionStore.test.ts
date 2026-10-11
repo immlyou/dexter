@@ -24,7 +24,7 @@ describe('sessionStore', () => {
   describe('setCurrentSession', () => {
     it('should set current session', () => {
       const session: Session = {
-        id: 'session-1',
+        sessionId: 'session-1',
         model: 'gpt-4',
         provider: 'openai',
         createdAt: new Date().toISOString(),
@@ -40,7 +40,7 @@ describe('sessionStore', () => {
 
     it('should clear current session when set to null', () => {
       const session: Session = {
-        id: 'session-1',
+        sessionId: 'session-1',
         model: 'gpt-4',
         provider: 'openai',
         createdAt: new Date().toISOString(),
@@ -59,7 +59,7 @@ describe('sessionStore', () => {
   describe('addSession', () => {
     it('should add a new session to the list', () => {
       const session: Session = {
-        id: 'session-1',
+        sessionId: 'session-1',
         model: 'gpt-4',
         provider: 'openai',
         createdAt: new Date().toISOString(),
@@ -76,7 +76,7 @@ describe('sessionStore', () => {
 
     it('should add multiple sessions', () => {
       const session1: Session = {
-        id: 'session-1',
+        sessionId: 'session-1',
         model: 'gpt-4',
         provider: 'openai',
         createdAt: new Date().toISOString(),
@@ -84,7 +84,7 @@ describe('sessionStore', () => {
       };
 
       const session2: Session = {
-        id: 'session-2',
+        sessionId: 'session-2',
         model: 'claude-3',
         provider: 'anthropic',
         createdAt: new Date().toISOString(),
@@ -102,7 +102,7 @@ describe('sessionStore', () => {
 
     it('should maintain immutability', () => {
       const session: Session = {
-        id: 'session-1',
+        sessionId: 'session-1',
         model: 'gpt-4',
         provider: 'openai',
         createdAt: new Date().toISOString(),
@@ -311,7 +311,7 @@ describe('sessionStore', () => {
 
     it('should not affect other state properties', () => {
       const session: Session = {
-        id: 'session-1',
+        sessionId: 'session-1',
         model: 'gpt-4',
         provider: 'openai',
         createdAt: new Date().toISOString(),

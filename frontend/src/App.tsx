@@ -111,8 +111,6 @@ function MainApp() {
   const [viewMode, setViewMode] = useState<'plain' | 'markdown'>('plain');
   const eventsEndRef = useRef<HTMLDivElement>(null);
 
-  const token = localStorage.getItem('access_token');
-
   // Auto-scroll to latest event
   useEffect(() => {
     eventsEndRef.current?.scrollIntoView({ behavior: 'smooth' });

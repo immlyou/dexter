@@ -11,6 +11,7 @@ import type {
   CreateQueryRequest,
   CreateQueryResponse,
   ModelListResponse,
+  Model,
   UserWithDetails,
 } from '../../types/api';
 import { mockUser, mockSessions, mockProviders, generateMockAnswer } from './mockData';
@@ -224,6 +225,19 @@ class MockApiClient {
     return {
       providers: mockProviders,
     };
+  }
+
+  async getModel(provider: string, modelId: string): Promise<Model> {
+    await delay(200);
+    console.log('[MockAPI] Get model', provider, modelId);
+
+    const model = mockProviders
+      .find((p) => p.id === provider)
+      ?.models.find((m) => m.id === modelId);
+    if (!model) {
+      throw new Error(`Model not found: ${provider}/${modelId}`);
+    }
+    return model;
   }
 
   // User APIs

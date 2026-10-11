@@ -6,7 +6,7 @@ import { wsClient } from '../services/websocket';
 import { mockApiClient } from '../services/mock/mockApi';
 import { mockWsClient } from '../services/mock/mockWebSocket';
 import type { AgentEvent } from '../types';
-import type { CreateQueryRequest, Query } from '../types/api';
+import type { CreateQueryRequest } from '../types/api';
 
 // Select API client based on config
 const api = config.useMockApi ? mockApiClient : apiClient;

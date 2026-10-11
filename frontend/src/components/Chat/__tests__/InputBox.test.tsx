@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, waitFor } from '../../../test/utils';
+import { render, screen } from '../../../test/utils';
 import userEvent from '@testing-library/user-event';
 import InputBox from '../InputBox';
 import { useSessionStore } from '../../../stores/sessionStore';
@@ -8,6 +8,14 @@ describe('InputBox', () => {
   beforeEach(() => {
     // Reset store
     useSessionStore.setState({
+      // InputBox only submits when a session is selected
+      currentSession: {
+        sessionId: 'session-1',
+        model: 'gpt-4',
+        provider: 'openai',
+        createdAt: '2026-02-11T00:00:00.000Z',
+        updatedAt: '2026-02-11T00:00:00.000Z',
+      },
       messages: [],
       isProcessing: false,
     });

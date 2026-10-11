@@ -1,4 +1,5 @@
-import { useState, KeyboardEvent } from 'react';
+import { useState } from 'react';
+import type { KeyboardEvent } from 'react';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useCreateQuery } from '../../hooks/useQuery';
 
@@ -45,13 +46,13 @@ export default function InputBox({ disabled = false }: InputBoxProps) {
     // Create query via API
     createQuery(
       {
-        sessionId: currentSession.id,
+        sessionId: currentSession.sessionId,
         query: queryText,
       },
       {
         onSuccess: (data) => {
           // Set the queryId so ChatInterface can start streaming events
-          setCurrentQueryId(data.id);
+          setCurrentQueryId(data.queryId);
         },
         onError: (error) => {
           console.error('Failed to create query:', error);

@@ -43,7 +43,7 @@ export default function ChatInterface() {
       updateMessage(latestAgentMessage.id, {
         events: events,
         content: answer || '',
-        status: answer ? 'complete' : 'processing',
+        status: answer ? 'completed' : 'processing',
       });
     }
   }, [events, answer, messages, updateMessage]);

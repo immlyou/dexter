@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../test/mocks/server';
 import { apiClient } from '../api';
@@ -115,7 +115,7 @@ describe('API Client', () => {
         const result = await apiClient.getSessions();
 
         expect(result.sessions).toHaveLength(1);
-        expect(result.sessions[0].id).toBe('session-1');
+        expect(result.sessions[0].sessionId).toBe('session-1');
       });
 
       it('should accept pagination params', async () => {
@@ -135,7 +135,7 @@ describe('API Client', () => {
       it('should get single session', async () => {
         const result = await apiClient.getSession('session-1');
 
-        expect(result.id).toBe('session-1');
+        expect(result.sessionId).toBe('session-1');
         expect(result.model).toBe('gpt-4');
       });
     });
@@ -147,7 +147,7 @@ describe('API Client', () => {
           provider: 'openai',
         });
 
-        expect(result.id).toBe('session-new');
+        expect(result.sessionId).toBe('session-new');
         expect(result.model).toBe('gpt-4');
       });
     });
@@ -159,7 +159,7 @@ describe('API Client', () => {
         });
 
         expect(result).toBeDefined();
-        expect(result.id).toBe('session-1');
+        expect(result.sessionId).toBe('session-1');
       });
     });
 
@@ -189,8 +189,8 @@ describe('API Client', () => {
       it('should get query status', async () => {
         const result = await apiClient.getQuery('query-1');
 
-        expect(result.id).toBe('query-1');
-        expect(result.query).toBe('What is the revenue of AAPL?');
+        expect(result.queryId).toBe('query-1');
+        expect(result.queryText).toBe('What is the revenue of AAPL?');
       });
     });
 
@@ -264,7 +264,7 @@ describe('API Client', () => {
       it('should get current user', async () => {
         const result = await apiClient.getCurrentUser();
 
-        expect(result.id).toBe('user-1');
+        expect(result.userId).toBe('user-1');
         expect(result.email).toBe('test@example.com');
       });
     });
@@ -274,7 +274,7 @@ describe('API Client', () => {
         server.use(
           http.patch('http://localhost:3000/api/users/me', () => {
             return HttpResponse.json({
-              id: 'user-1',
+              userId: 'user-1',
               name: 'Updated Name',
               email: 'test@example.com',
               createdAt: new Date().toISOString(),
@@ -297,7 +297,7 @@ describe('API Client', () => {
         server.use(
           http.post('http://localhost:3000/api/users/me/api-keys', () => {
             return HttpResponse.json({
-              id: 'key-1',
+              keyId: 'key-1',
               key: 'sk-test-key',
               name: 'Test Key',
               createdAt: new Date().toISOString(),
@@ -309,7 +309,7 @@ describe('API Client', () => {
           name: 'Test Key',
         });
 
-        expect(result.id).toBe('key-1');
+        expect(result.keyId).toBe('key-1');
         expect(result.key).toBe('sk-test-key');
       });
     });
@@ -348,7 +348,7 @@ describe('API Client', () => {
           http.get('http://localhost:3000/api/users/me', ({ request }) => {
             authHeader = request.headers.get('Authorization') || undefined;
             return HttpResponse.json({
-              id: 'user-1',
+              userId: 'user-1',
               email: 'test@example.com',
               name: 'Test User',
               createdAt: new Date().toISOString(),
@@ -374,7 +374,7 @@ describe('API Client', () => {
               token: 'new-token',
               refreshToken: 'new-refresh-token',
               user: {
-                id: 'user-1',
+                userId: 'user-1',
                 email: 'test@example.com',
                 name: 'Test User',
               },
@@ -410,7 +410,7 @@ describe('API Client', () => {
 
             // Second request with new token
             return HttpResponse.json({
-              id: 'user-1',
+              userId: 'user-1',
               email: 'test@example.com',
               name: 'Test User',
               createdAt: new Date().toISOString(),
@@ -422,7 +422,7 @@ describe('API Client', () => {
 
         const result = await apiClient.getCurrentUser();
 
-        expect(result.id).toBe('user-1');
+        expect(result.userId).toBe('user-1');
         expect(requestCount).toBe(2); // Original + retry
         expect(localStorage.getItem('access_token')).toBe('new-access-token');
       });

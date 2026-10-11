@@ -36,7 +36,6 @@ export default function Sidebar() {
         name: `New Chat ${new Date().toLocaleString()}`,
         model: defaultModel.id,
         provider: defaultModel.provider,
-        config: {},
       },
       {
         onSuccess: (newSession) => {
@@ -99,7 +98,7 @@ export default function Sidebar() {
         ) : (
           sessions.map((session) => (
             <button
-              key={session.id}
+              key={session.sessionId}
               onClick={() => {
                 setCurrentSession(session);
                 clearMessages();
@@ -107,7 +106,7 @@ export default function Sidebar() {
               className={`
                 w-full p-3 mb-2 rounded-lg text-left transition-colors
                 ${
-                  currentSession?.id === session.id
+                  currentSession?.sessionId === session.sessionId
                     ? 'bg-gray-700'
                     : 'hover:bg-gray-800'
                 }

@@ -1,5 +1,5 @@
 // Mock data for development and testing
-import type { Session, User, Model, Provider } from '../../types/api';
+import type { Session, User, Provider } from '../../types/api';
 import type { AgentEvent } from '../../types';
 
 // Mock User

@@ -242,7 +242,7 @@ class WebSocketClient {
     }
   }
 
-  cancel(queryId: string): void {
+  cancel(_queryId: string): void {
     // Backend doesn't have cancel via WebSocket, would need to use REST API
     console.log('Cancel not implemented via WebSocket');
   }
