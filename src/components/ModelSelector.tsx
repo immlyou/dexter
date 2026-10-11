@@ -26,6 +26,7 @@ const PROVIDERS: Provider[] = [
     displayName: 'Anthropic',
     providerId: 'anthropic',
     models: [
+      { id: 'claude-sonnet-5-5', displayName: 'Sonnet 5.5' },
       { id: 'claude-sonnet-4-5', displayName: 'Sonnet 4.5' },
       { id: 'claude-opus-4-6', displayName: 'Opus 4.6' },
     ],
