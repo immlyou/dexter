@@ -81,12 +81,12 @@ export interface DoneEvent {
   }>
   iterations: number
   totalTime: number
-  tokenUsage: {
+  tokenUsage?: {
     inputTokens: number
     outputTokens: number
     totalTokens: number
   }
-  tokensPerSecond: number
+  tokensPerSecond?: number
 }
 
 export type QueryEventData =

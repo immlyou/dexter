@@ -6,10 +6,10 @@ import { ChatOllama } from '@langchain/ollama';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { StructuredToolInterface } from '@langchain/core/tools';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import { Runnable } from '@langchain/core/runnables';
 import { z } from 'zod';
-import { DEFAULT_SYSTEM_PROMPT } from '@/agent/prompts';
+import { DEFAULT_SYSTEM_PROMPT } from '../agent/prompts.js';
 import type { TokenUsage } from '../agent/types.js';
 
 export const DEFAULT_PROVIDER = 'anthropic';
@@ -122,7 +122,7 @@ export function getChatModel(
 ): BaseChatModel {
   const opts: ModelOpts = { streaming };
   const prefix = Object.keys(MODEL_PROVIDERS).find((p) => modelName.startsWith(p));
-  const factory = prefix ? MODEL_PROVIDERS[prefix] : DEFAULT_MODEL_FACTORY;
+  const factory = (prefix && MODEL_PROVIDERS[prefix]) || DEFAULT_MODEL_FACTORY;
   return factory(modelName, opts);
 }
 

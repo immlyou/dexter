@@ -1,5 +1,5 @@
 import { AIMessage } from '@langchain/core/messages';
-import { StructuredToolInterface } from '@langchain/core/tools';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlm } from '../model/llm.js';
 import { Scratchpad, type ToolContext } from './scratchpad.js';
 import { getTools } from '../tools/registry.js';

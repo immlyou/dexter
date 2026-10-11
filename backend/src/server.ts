@@ -1,3 +1,4 @@
+import type { Server } from 'bun'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
@@ -19,7 +20,7 @@ app.use('*', async (c, next) => {
   c.header('Access-Control-Allow-Credentials', 'true')
 
   if (c.req.method === 'OPTIONS') {
-    return c.text('', 204)
+    return c.body(null, 204)
   }
 
   await next()
@@ -61,7 +62,7 @@ console.log(`📡 WebSocket available at ws://localhost:${port}/stream`)
 // Export Bun server with WebSocket support
 export default {
   port,
-  fetch(req, server) {
+  fetch(req: Request, server: Server<WebSocketData>) {
     // Handle WebSocket upgrade for /stream endpoint
     const url = new URL(req.url)
     if (url.pathname === '/stream') {

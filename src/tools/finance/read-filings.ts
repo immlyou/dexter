@@ -1,6 +1,6 @@
-import { DynamicStructuredTool, StructuredToolInterface } from '@langchain/core/tools';
+import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import type { RunnableConfig } from '@langchain/core/runnables';
-import { AIMessage, ToolCall } from '@langchain/core/messages';
+import { AIMessage, type ToolCall } from '@langchain/core/messages';
 import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
@@ -124,7 +124,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
       }
 
       // Execute getFilings
-      const filingsCall = step1ToolCalls[0];
+      const filingsCall = step1ToolCalls[0]!;
       const filingsRaw = await (STEP1_TOOLS[0] as StructuredToolInterface).invoke(filingsCall.args);
       const filingsResult = JSON.parse(typeof filingsRaw === 'string' ? filingsRaw : JSON.stringify(filingsRaw));
       

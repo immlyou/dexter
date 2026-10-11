@@ -44,13 +44,17 @@ queriesRouter.post('/', zValidator('json', createQuerySchema), async (c) => {
       })
     }
 
+    // Match the WebSocket scheme to how the client reached us (direct or via TLS proxy)
+    const isSecure = c.req.header('x-forwarded-proto') === 'https' || new URL(c.req.url).protocol === 'https:'
+    const wsProtocol = isSecure ? 'wss' : 'ws'
+
     return c.json({
       queryId: newQuery.id,
       sessionId: newQuery.sessionId,
       queryText: newQuery.queryText,
       status: newQuery.status,
       createdAt: newQuery.createdAt,
-      streamUrl: `wss://${c.req.header('host')}/stream?queryId=${newQuery.id}`
+      streamUrl: `${wsProtocol}://${c.req.header('host')}/stream?queryId=${newQuery.id}`
     }, 201)
   } catch (error) {
     if (error instanceof Error) {

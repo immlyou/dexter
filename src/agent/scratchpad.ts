@@ -391,8 +391,8 @@ export class Scratchpad {
     if (toClearCount === 0) return 0;
     
     // Clear oldest entries (first N indices)
-    for (let i = 0; i < toClearCount; i++) {
-      this.clearedToolIndices.add(toolResultIndices[i]);
+    for (const idx of toolResultIndices.slice(0, toClearCount)) {
+      this.clearedToolIndices.add(idx);
     }
     
     return toClearCount;

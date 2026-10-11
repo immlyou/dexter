@@ -155,7 +155,7 @@ Select which previous messages are relevant to understanding or answering the cu
       const selectedMessages = selectedIds
         .filter((idx) => idx >= 0 && idx < this.messages.length)
         .map((idx) => this.messages[idx])
-        .filter((m) => m.answer !== null); // Ensure we only return completed messages
+        .filter((m): m is Message => m !== undefined && m.answer !== null); // Ensure we only return completed messages
 
       // Cache the result
       this.relevantMessagesByQuery.set(cacheKey, selectedMessages);

@@ -1,5 +1,5 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
-import { chromium, Browser, Page } from 'playwright';
+import { chromium, type Browser, type Page } from 'playwright';
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 
@@ -63,7 +63,7 @@ function parseRefsFromSnapshot(snapshot: string): Map<string, { role: string; na
     
     // Extract role (first word after "- ")
     const roleMatch = line.match(/^\s*-\s*(\w+)/);
-    const role = roleMatch ? roleMatch[1] : 'generic';
+    const role = roleMatch?.[1] ?? 'generic';
     
     // Extract name (text in quotes)
     const nameMatch = line.match(/"([^"]+)"/);
@@ -71,9 +71,9 @@ function parseRefsFromSnapshot(snapshot: string): Map<string, { role: string; na
     
     // Extract nth if present
     const nthMatch = line.match(/\[nth=(\d+)\]/);
-    const nth = nthMatch ? parseInt(nthMatch[1], 10) : undefined;
+    const nth = nthMatch ? parseInt(nthMatch[1]!, 10) : undefined;
     
-    refs.set(ref, { role, name, nth });
+    refs.set(ref!, { role, name, nth });
   }
   
   return refs;
