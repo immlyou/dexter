@@ -4,6 +4,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import wsClient from './services/websocket';
 import apiClient from './services/api';
+import { watchQuery } from './services/query-stream';
 import type { AgentEvent } from './types';
 
 // Create a client
@@ -105,11 +106,19 @@ function MainApp() {
   const [sessionId, setSessionId] = useState<string>('');
   const [query, setQuery] = useState('');
   const [answer, setAnswer] = useState('');
+  const [queryError, setQueryError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [events, setEvents] = useState<EventDisplay[]>([]);
   const [currentQueryId, setCurrentQueryId] = useState<string>('');
   const [viewMode, setViewMode] = useState<'plain' | 'markdown'>('plain');
   const eventsEndRef = useRef<HTMLDivElement>(null);
+  const stopQueryRef = useRef<(() => void) | undefined>(undefined);
+  const requestVersionRef = useRef(0);
+
+  useEffect(() => () => {
+    requestVersionRef.current++;
+    stopQueryRef.current?.();
+  }, []);
 
   // Auto-scroll to latest event
   useEffect(() => {
@@ -117,6 +126,8 @@ function MainApp() {
   }, [events]);
 
   const handleLogout = async () => {
+    requestVersionRef.current++;
+    stopQueryRef.current?.();
     wsClient.disconnect();
     await apiClient.logout();
   };
@@ -195,8 +206,11 @@ Query ID: ${currentQueryId}
       return;
     }
 
+    stopQueryRef.current?.();
+    const requestVersion = ++requestVersionRef.current;
     setIsLoading(true);
     setAnswer('');
+    setQueryError('');
     setEvents([]);
 
     try {
@@ -205,88 +219,27 @@ Query ID: ${currentQueryId}
         query,
       });
 
+      if (requestVersion !== requestVersionRef.current) return;
       const queryId = result.queryId;
       setCurrentQueryId(queryId);
 
-      // Flag to track if we received events via WebSocket
-      let receivedWebSocketEvents = false;
-
-      // Subscribe to WebSocket events
-      const unsubscribe = wsClient.subscribe(
-        queryId,
-        (event: AgentEvent) => {
-          console.log('Received WebSocket event:', event);
-          receivedWebSocketEvents = true;
-
-          // Add event to display
-          setEvents((prev) => [...prev, { ...event, id: Date.now().toString() + Math.random() }]);
-
-          // Handle different event types
-          if (event.type === 'done') {
-            setAnswer(event.answer);
-            setIsLoading(false);
-            // Don't unsubscribe immediately to see final events
-            setTimeout(() => unsubscribe(), 1000);
-          } else if (event.type === 'tool_error') {
-            setIsLoading(false);
-          }
+      stopQueryRef.current = watchQuery(queryId, {
+        onEvent: (event) => {
+          setEvents((prev) => [...prev, { ...event, id: crypto.randomUUID() }]);
         },
-        (error) => {
-          console.error('WebSocket error:', error);
-          setAnswer(`錯誤: ${error.message}`);
+        onComplete: (finalAnswer) => {
+          setAnswer(finalAnswer);
           setIsLoading(false);
-        }
-      );
-
-      // Fallback: Poll for results if WebSocket doesn't work
-      const pollInterval = setInterval(async () => {
-        if (!receivedWebSocketEvents) {
-          console.log('WebSocket not working, polling for results...');
-          try {
-            const queryStatus = await apiClient.getQuery(queryId);
-            console.log('Query status:', queryStatus);
-
-            if (queryStatus.status === 'completed') {
-              console.log('Query completed! Answer:', queryStatus.answer);
-              console.log('Answer length:', queryStatus.answer?.length);
-              console.log('Setting answer state...');
-              const finalAnswer = queryStatus.answer || '無回答';
-              setAnswer(finalAnswer);
-              console.log('Answer state set to:', finalAnswer);
-              setIsLoading(false);
-              console.log('Loading state set to false');
-              clearInterval(pollInterval);
-              unsubscribe();
-            } else if (queryStatus.status === 'error') {
-              console.log('Query error:', queryStatus.errorMessage);
-              setAnswer('錯誤: ' + (queryStatus.errorMessage || '未知錯誤'));
-              setIsLoading(false);
-              clearInterval(pollInterval);
-              unsubscribe();
-            } else {
-              console.log('Query still processing, status:', queryStatus.status);
-            }
-          } catch (pollError) {
-            console.error('Polling error:', pollError);
-          }
-        } else {
-          // WebSocket is working, stop polling
-          console.log('WebSocket is working, stopping polling');
-          clearInterval(pollInterval);
-        }
-      }, 2000);
-
-      // Stop polling after 60 seconds
-      setTimeout(() => {
-        clearInterval(pollInterval);
-        if (isLoading) {
+        },
+        onError: (message) => {
+          setQueryError(message);
           setIsLoading(false);
-          setAnswer('查詢超時，請重試');
-        }
-      }, 60000);
+        },
+      });
     } catch (error: any) {
+      if (requestVersion !== requestVersionRef.current) return;
       const errorMsg = error?.response?.data?.error?.message || error.message || '未知錯誤';
-      setAnswer('錯誤: ' + errorMsg);
+      setQueryError(errorMsg);
       setIsLoading(false);
     }
   };
@@ -370,7 +323,7 @@ Query ID: ${currentQueryId}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="例如：What is Apple's revenue growth over the past 5 years?"
-            disabled={!sessionId}
+            disabled={!sessionId || isLoading}
             style={{
               width: '100%',
               minHeight: '100px',
@@ -429,6 +382,12 @@ Query ID: ${currentQueryId}
           </div>
         </div>
 
+        {queryError && (
+          <div role="alert" style={{ color: '#b71c1c', marginBottom: '20px' }}>
+            錯誤: {queryError}
+          </div>
+        )}
+
         {/* Events Section */}
         {events.length > 0 && (
           <div style={{ marginBottom: '20px' }}>
@@ -457,7 +416,7 @@ Query ID: ${currentQueryId}
             borderRadius: '6px',
             fontSize: '14px'
           }}>
-            ⏳ 正在處理查詢... (answer state: {answer ? `"${answer.substring(0, 50)}..."` : 'empty'})
+            ⏳ 正在處理查詢...
           </div>
         )}
 

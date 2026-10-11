@@ -8,7 +8,10 @@ export type WebSocketErrorHandler = (error: { code: string; message: string }) =
 interface WSEventMessage {
   type: 'event';
   queryId?: string;
-  event: AgentEvent;
+  event: {
+    type: AgentEvent['type'];
+    data: Omit<AgentEvent, 'timestamp'>;
+  };
   timestamp: string;
 }
 
@@ -47,7 +50,7 @@ class WebSocketClient {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
-  private pendingSubscriptions: string[] = [];
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor() {
     // Initialize connection when first subscription is made
@@ -66,12 +69,12 @@ class WebSocketClient {
       return this.ws;
     }
 
-    this.isConnecting = true;
-
     const token = this.getToken();
     if (!token) {
       throw new Error('Authentication token not found');
     }
+
+    this.isConnecting = true;
 
     // Connect to /stream endpoint
     const wsUrl = `${WS_BASE_URL}/stream`;
@@ -80,7 +83,6 @@ class WebSocketClient {
     this.ws.onopen = () => {
       console.log('WebSocket connected');
       this.isConnecting = false;
-      this.reconnectAttempts = 0;
 
       // Authenticate
       this.send({
@@ -104,11 +106,14 @@ class WebSocketClient {
       this.isConnecting = false;
 
       // Attempt to reconnect
-      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      if (this.eventHandlers.size > 0 && this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++;
         const delay = this.reconnectDelay * this.reconnectAttempts;
         console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-        setTimeout(() => this.connect(), delay);
+        this.reconnectTimer = setTimeout(() => {
+          this.reconnectTimer = null;
+          if (this.eventHandlers.size > 0 && this.getToken()) this.connect();
+        }, delay);
       }
     };
 
@@ -125,15 +130,15 @@ class WebSocketClient {
       case 'authenticated':
         console.log('WebSocket authenticated:', data.userId);
         this.isAuthenticated = true;
+        this.reconnectAttempts = 0;
 
-        // Subscribe to pending queries
-        this.pendingSubscriptions.forEach((queryId) => {
+        // Restore active subscriptions after authentication or reconnect.
+        this.eventHandlers.forEach((_, queryId) => {
           this.send({
             type: 'subscribe',
             queryId,
           });
         });
-        this.pendingSubscriptions = [];
         break;
 
       case 'subscribed':
@@ -148,7 +153,8 @@ class WebSocketClient {
         if (data.queryId) {
           const handlers = this.eventHandlers.get(data.queryId);
           if (handlers) {
-            handlers.forEach((handler) => handler(data.event));
+            const event = { ...data.event.data, type: data.event.type, timestamp: data.timestamp } as AgentEvent;
+            handlers.slice().forEach((handler) => handler(event));
           }
         }
         break;
@@ -163,7 +169,7 @@ class WebSocketClient {
     }
   }
 
-  private send(message: any): void {
+  private send(message: unknown): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     }
@@ -186,14 +192,12 @@ class WebSocketClient {
       this.errorHandlers.get(queryId)!.push(onError);
     }
 
-    // Send subscribe message or queue it
+    // Before authentication, the handler registry retains pending subscriptions.
     if (this.isAuthenticated) {
       this.send({
         type: 'subscribe',
         queryId,
       });
-    } else {
-      this.pendingSubscriptions.push(queryId);
     }
 
     // Return unsubscribe function
@@ -240,6 +244,7 @@ class WebSocketClient {
         queryId,
       });
     }
+    if (this.eventHandlers.size === 0) this.disconnect();
   }
 
   cancel(_queryId: string): void {
@@ -248,14 +253,20 @@ class WebSocketClient {
   }
 
   disconnect(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     if (this.ws) {
+      this.ws.onclose = null;
+      this.ws.onmessage = null;
+      this.ws.onopen = null;
       this.ws.close();
       this.ws = null;
     }
     this.isAuthenticated = false;
+    this.isConnecting = false;
+    this.reconnectAttempts = 0;
     this.eventHandlers.clear();
     this.errorHandlers.clear();
-    this.pendingSubscriptions = [];
   }
 
   isConnected(): boolean {
