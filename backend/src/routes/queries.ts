@@ -8,7 +8,7 @@ import {
   cancelQuery,
   listQueries
 } from '../services/query.service'
-import { startQueryExecution } from '../services/agent.service'
+import { startQueryExecution, abortQueryExecution } from '../services/agent.service'
 import { createQuerySchema, listQueriesQuerySchema } from '../types/query'
 import { db } from '../db/client'
 import { sessions } from '../db/schema'
@@ -234,6 +234,8 @@ queriesRouter.delete('/:queryId', async (c) => {
         }
       }, 404)
     }
+
+    abortQueryExecution(queryId)
 
     return c.json({
       queryId,

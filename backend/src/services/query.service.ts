@@ -124,7 +124,7 @@ export async function updateQueryStatus(
     tokensPerSecond?: number
     errorMessage?: string
   }
-): Promise<void> {
+): Promise<boolean> {
   const updateData: Partial<Query> = {
     status
   }
@@ -140,10 +140,15 @@ export async function updateQueryStatus(
     updateData.completedAt = new Date()
   }
 
-  await db
+  // Only a processing query may transition, so a late completed/error write can
+  // never overwrite a cancelled (or otherwise terminal) status.
+  const updated = await db
     .update(queries)
     .set(updateData)
-    .where(eq(queries.id, queryId))
+    .where(and(eq(queries.id, queryId), eq(queries.status, 'processing')))
+    .returning({ id: queries.id })
+
+  return updated.length > 0
 }
 
 /**

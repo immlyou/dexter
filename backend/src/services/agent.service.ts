@@ -7,6 +7,16 @@ import { broadcastQueryEvent } from '../websocket/handler'
 // Hard upper bound so a hung LLM/tool call can never leave a query in "processing" forever
 const QUERY_TIMEOUT_MS = 10 * 60 * 1000
 
+// Per-query abort controllers so a cancel request can stop the running agent
+const runningQueries = new Map<string, AbortController>()
+
+/**
+ * Abort the agent running for a query (no-op if none is running)
+ */
+export function abortQueryExecution(queryId: string): void {
+  runningQueries.get(queryId)?.abort(new Error('Query cancelled'))
+}
+
 /**
  * Execute a query using the Agent
  * This function runs asynchronously and updates the database as events occur.
@@ -22,6 +32,8 @@ export async function executeQuery(
   }
 ): Promise<void> {
   let finished = false
+  const controller = new AbortController()
+  runningQueries.set(queryId, controller)
 
   try {
     // Create agent instance
@@ -29,19 +41,23 @@ export async function executeQuery(
       model: config.model,
       modelProvider: config.provider,
       maxIterations: config.maxIterations || 10,
-      signal: AbortSignal.timeout(QUERY_TIMEOUT_MS)
+      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(QUERY_TIMEOUT_MS)])
     })
 
     // Run agent and process events
     for await (const event of agent.run(queryText)) {
+      if (controller.signal.aborted) break
       await handleAgentEvent(queryId, event)
       if (event.type === 'done') finished = true
     }
 
-    if (!finished) {
+    if (!finished && !controller.signal.aborted) {
       throw new Error('Agent finished without producing an answer')
     }
   } catch (error) {
+    // Cancelled by the user: status is already 'cancelled', nothing more to record
+    if (controller.signal.aborted) return
+
     console.error('Agent execution error:', error)
     const message = error instanceof Error ? error.message : 'Unknown error occurred'
 
@@ -50,6 +66,8 @@ export async function executeQuery(
 
     const errorData: QueryEventData = { type: 'tool_error', tool: 'agent', error: message }
     await emitEvent(queryId, errorData)
+  } finally {
+    runningQueries.delete(queryId)
   }
 }
 

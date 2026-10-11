@@ -9,6 +9,7 @@ import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import { Runnable } from '@langchain/core/runnables';
 import { z } from 'zod';
+import { extractTextContent } from '../utils/ai-message.js';
 import { DEFAULT_SYSTEM_PROMPT } from '../agent/prompts.js';
 import type { TokenUsage } from '../agent/types.js';
 
@@ -223,7 +224,7 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
   // If no outputSchema and no tools, extract content from AIMessage
   // When tools are provided, return the full AIMessage to preserve tool_calls
   if (!outputSchema && !tools && result && typeof result === 'object' && 'content' in result) {
-    return { response: (result as { content: string }).content, usage };
+    return { response: extractTextContent(result as AIMessage), usage };
   }
   return { response: result as AIMessage, usage };
 }
