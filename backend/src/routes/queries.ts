@@ -103,7 +103,7 @@ queriesRouter.post('/', rateLimit([
         timestamp: new Date().toISOString()
       }
     }, 500)
-    } finally {
+  } finally {
     // Execution owns the slot once started; otherwise free it now
     if (!started) release()
   }
