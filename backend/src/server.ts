@@ -7,9 +7,13 @@ import { getAuthSecrets } from './config/secrets'
 import sessionsRouter from './routes/sessions'
 import queriesRouter from './routes/queries'
 import { websocketHandler, type WebSocketData } from './websocket/handler'
+import { startRefreshTokenCleanup } from './services/auth.service'
 
 // Refuse to start without strong signing secrets
 getAuthSecrets()
+
+// Hourly purge of expired/long-revoked refresh tokens (timer does not keep the process alive)
+startRefreshTokenCleanup()
 
 const app = new Hono()
 

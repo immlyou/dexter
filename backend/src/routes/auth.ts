@@ -159,6 +159,17 @@ auth.post('/refresh', zValidator('json', refreshTokenSchema), async (c) => {
         }, 401)
       }
 
+      if (error.message === 'REFRESH_RETRY') {
+        // Another client (e.g. a second tab) just rotated this token: reread stored tokens
+        return c.json({
+          error: {
+            code: 'REFRESH_RETRY',
+            message: 'Refresh token was just rotated by another request; retry with the latest token',
+            timestamp: new Date().toISOString()
+          }
+        }, 409)
+      }
+
       if (error.message === 'REFRESH_TOKEN_REUSED') {
         return c.json({
           error: {

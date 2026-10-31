@@ -11,7 +11,10 @@ import {
   issueTokens,
   refreshAccessToken,
   logoutUser,
-  REFRESH_AUDIENCE
+  cleanupRefreshTokens,
+  startRefreshTokenCleanup,
+  REFRESH_AUDIENCE,
+  REFRESH_REUSE_GRACE_MS
 } from './auth.service'
 import type { RefreshTokenRepo } from './refreshToken.repo'
 import type { RefreshToken, User } from '../db/schema'
@@ -33,37 +36,74 @@ function makeUser(overrides: Partial<User> = {}): User {
   }
 }
 
-/** In-memory stand-in for the Drizzle repo, mirroring its conditional-update semantics. */
+/**
+ * In-memory stand-in for the Drizzle repo, mirroring its conditional-update semantics.
+ * lockUser is a real per-user mutex held until the enclosing transaction ends, so
+ * interleavings between concurrent transactions follow the same order as in Postgres.
+ */
 class MemoryRepo implements RefreshTokenRepo {
   rows: RefreshToken[] = []
   users = new Map<string, User>()
+  private locks = new Map<string, Promise<void>>()
+  /** Widens the window between revoking and inserting during rotation (race tests). */
+  insertDelayMs = 0
 
   async insert(row: { userId: string; jti: string; tokenHash: string; expiresAt: Date }) {
+    if (this.insertDelayMs) await new Promise((r) => setTimeout(r, this.insertDelayMs))
     if (this.rows.some((r) => r.jti === row.jti || r.tokenHash === row.tokenHash)) throw new Error('unique violation')
-    this.rows.push({ id: crypto.randomUUID(), isRevoked: false, createdAt: new Date(), ...row })
+    this.rows.push({ id: crypto.randomUUID(), isRevoked: false, revokedAt: null, replacedBy: null, createdAt: new Date(), ...row })
   }
   async findByJti(jti: string) {
-    return this.rows.find((r) => r.jti === jti)
+    const row = this.rows.find((r) => r.jti === jti)
+    return row && { ...row }
   }
-  async revokeActive(jti: string, tokenHash: string) {
+  async revokeActive(jti: string, tokenHash: string, replacedBy?: string) {
     const row = this.rows.find((r) => r.jti === jti && r.tokenHash === tokenHash && !r.isRevoked)
     if (!row) return undefined
-    row.isRevoked = true
+    Object.assign(row, { isRevoked: true, revokedAt: new Date(), replacedBy: replacedBy ?? null })
     return { ...row }
   }
   async revokeAllForUser(userId: string) {
-    for (const r of this.rows) if (r.userId === userId) r.isRevoked = true
+    for (const r of this.rows) if (r.userId === userId && !r.isRevoked) Object.assign(r, { isRevoked: true, revokedAt: new Date() })
   }
-  async getUser(userId: string) {
-    return this.users.get(userId)
+  async lockUser(): Promise<User | undefined> {
+    throw new Error('lockUser must be called inside a transaction')
+  }
+  async deleteStale(now: Date, revokedBefore: Date) {
+    const before = this.rows.length
+    this.rows = this.rows.filter((r) => !(r.expiresAt < now || (r.isRevoked && r.revokedAt && r.revokedAt < revokedBefore)))
+    return before - this.rows.length
   }
   async transaction<T>(fn: (repo: RefreshTokenRepo) => Promise<T>): Promise<T> {
-    return fn(this)
+    const held: Array<() => void> = []
+    const heldIds = new Set<string>()
+    const tx: RefreshTokenRepo = Object.assign(Object.create(this) as MemoryRepo, {
+      lockUser: async (userId: string) => {
+        if (!heldIds.has(userId)) {
+          heldIds.add(userId)
+          const previous = this.locks.get(userId) ?? Promise.resolve()
+          let release!: () => void
+          const mine = new Promise<void>((r) => { release = r })
+          this.locks.set(userId, previous.then(() => mine))
+          await previous
+          held.push(release)
+        }
+        return this.users.get(userId)
+      },
+      transaction: <U>(inner: (r: RefreshTokenRepo) => Promise<U>) => inner(tx)
+    })
+    try {
+      return await fn(tx)
+    } finally {
+      for (const release of held) release()
+    }
   }
   active(userId: string) {
     return this.rows.filter((r) => r.userId === userId && !r.isRevoked)
   }
 }
+
+const afterGrace = () => Date.now() + REFRESH_REUSE_GRACE_MS + 1000
 
 describe('access/refresh token separation', () => {
   const payload = { userId: 'u1', email: 'a@b.c', plan: 'free' }
@@ -152,19 +192,61 @@ describe('refresh token storage and rotation', () => {
     const second = await refreshAccessToken(first.refreshToken, repo)
     await issueTokens(user, repo) // another device
 
-    await expect(refreshAccessToken(first.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
+    await expect(refreshAccessToken(first.refreshToken, repo, afterGrace)).rejects.toThrow('REFRESH_TOKEN_REUSED')
     expect(repo.active(user.id)).toHaveLength(0)
     // The legitimately rotated token is now dead too
     await expect(refreshAccessToken(second.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
   })
 
-  test('concurrent refreshes with the same token: exactly one succeeds', async () => {
+  test('re-presenting a just-rotated token within the grace window asks to retry', async () => {
+    const first = await issueTokens(user, repo)
+    const second = await refreshAccessToken(first.refreshToken, repo)
+
+    await expect(refreshAccessToken(first.refreshToken, repo)).rejects.toThrow('REFRESH_RETRY')
+    // Nothing was revoked: the successor still works
+    expect(repo.active(user.id)).toHaveLength(1)
+    await refreshAccessToken(second.refreshToken, repo)
+  })
+
+  test('grace window does not cover logged-out tokens', async () => {
+    const first = await issueTokens(user, repo)
+    await issueTokens(user, repo)
+    await logoutUser(first.refreshToken, repo)
+    await expect(refreshAccessToken(first.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
+    expect(repo.active(user.id)).toHaveLength(0)
+  })
+
+  test('grace window does not apply once the successor itself was revoked', async () => {
+    const first = await issueTokens(user, repo)
+    const second = await refreshAccessToken(first.refreshToken, repo)
+    await logoutUser(second.refreshToken, repo)
+    await expect(refreshAccessToken(first.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
+  })
+
+  test('replay racing a rotation cannot leave the new token alive', async () => {
+    const a = await issueTokens(user, repo)
+    const b = await refreshAccessToken(a.refreshToken, repo)
+    // Replay of A (outside grace) races rotation of B; whichever order the lock gives,
+    // no active token may survive the revoke-all
+    repo.insertDelayMs = 20
+    const results = await Promise.allSettled([
+      refreshAccessToken(b.refreshToken, repo),
+      refreshAccessToken(a.refreshToken, repo, afterGrace)
+    ])
+    expect(results[1].status).toBe('rejected')
+    expect(repo.active(user.id)).toHaveLength(0)
+  })
+
+  test('concurrent refreshes from two tabs: one rotates, the other is told to retry', async () => {
     const { refreshToken } = await issueTokens(user, repo)
     const results = await Promise.allSettled([
       refreshAccessToken(refreshToken, repo),
       refreshAccessToken(refreshToken, repo)
     ])
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult
+    expect(String(rejected.reason)).toContain('REFRESH_RETRY')
+    expect(repo.active(user.id)).toHaveLength(1)
   })
 
   test('unknown jti (e.g. deleted row) is invalid, not reuse', async () => {
@@ -197,5 +279,40 @@ describe('refresh token storage and rotation', () => {
     await logoutUser(a.refreshToken, repo)
     expect(repo.active(user.id)).toHaveLength(1)
     expect((await repo.findByJti(verifyRefreshToken(a.refreshToken).jti))?.isRevoked).toBe(true)
+  })
+})
+
+describe('refresh token cleanup', () => {
+  test('deletes expired and long-revoked tokens, keeps recent revocations for reuse detection', async () => {
+    const repo = new MemoryRepo()
+    const user = makeUser()
+    repo.users.set(user.id, user)
+    const live = await issueTokens(user, repo)
+    const recentlyRevoked = await issueTokens(user, repo)
+    await logoutUser(recentlyRevoked.refreshToken, repo)
+    const old = await issueTokens(user, repo)
+    await logoutUser(old.refreshToken, repo)
+    const oldRow = repo.rows.find((r) => r.jti === verifyRefreshToken(old.refreshToken).jti)!
+    oldRow.revokedAt = new Date(Date.now() - 400 * 24 * 3600 * 1000)
+    repo.rows.push({ ...oldRow, id: 'x', jti: 'expired', tokenHash: 'e', isRevoked: false, revokedAt: null, expiresAt: new Date(Date.now() - 1000) })
+
+    expect(await cleanupRefreshTokens(repo)).toBe(2)
+    expect(repo.rows.map((r) => r.jti).sort()).toEqual(
+      [verifyRefreshToken(live.refreshToken).jti, verifyRefreshToken(recentlyRevoked.refreshToken).jti].sort()
+    )
+  })
+
+  test('periodic job runs, survives errors, and stops', async () => {
+    let calls = 0
+    const stop = startRefreshTokenCleanup(5, async () => {
+      calls++
+      throw new Error('db down')
+    })
+    await new Promise((r) => setTimeout(r, 30))
+    stop()
+    const seen = calls
+    expect(seen).toBeGreaterThanOrEqual(2)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(calls).toBe(seen)
   })
 })

@@ -12,6 +12,17 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '15m'
 const REFRESH_TOKEN_EXPIRES_IN = process.env.REFRESH_TOKEN_EXPIRES_IN || '30d'
 const BCRYPT_ROUNDS = 10
 
+function envSeconds(name: string, fallback: number, max: number): number {
+  const n = Number.parseInt(process.env[name] ?? '', 10)
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, max) : fallback
+}
+
+// A token rotated less than this long ago may be re-presented (e.g. by a second tab
+// racing the first) without being treated as theft: the caller gets REFRESH_RETRY.
+export const REFRESH_REUSE_GRACE_MS = envSeconds('REFRESH_REUSE_GRACE_SECONDS', 20, 60) * 1000
+// Revoked rows are kept this long so replays are still detected as reuse, then deleted
+const REVOKED_TOKEN_RETENTION_MS = envSeconds('REVOKED_TOKEN_RETENTION_SECONDS', 7 * 24 * 3600, 365 * 24 * 3600) * 1000
+
 const ISSUER = 'dexter-api'
 // Distinct audiences so one token type can never be replayed as the other
 export const ACCESS_AUDIENCE = 'dexter-client'
@@ -144,19 +155,27 @@ export function verifyRefreshToken(token: string): RefreshTokenClaims {
   return decoded as RefreshTokenClaims
 }
 
-/**
- * Issue an access/refresh pair and persist the refresh token's digest
- */
-export async function issueTokens(user: User, repo: RefreshTokenRepo = drizzleRefreshTokenRepo): Promise<TokenPair> {
-  const accessToken = generateAccessToken({ userId: user.id, email: user.email, plan: user.plan })
-  const refresh = generateRefreshToken(user.id)
+async function persistRefreshToken(repo: RefreshTokenRepo, userId: string, refresh: { token: string; jti: string; expiresAt: Date }) {
   await repo.insert({
-    userId: user.id,
+    userId,
     jti: refresh.jti,
     tokenHash: digestToken(refresh.token),
     expiresAt: refresh.expiresAt
   })
-  return { accessToken, refreshToken: refresh.token }
+}
+
+/**
+ * Issue an access/refresh pair and persist the refresh token's digest.
+ * Runs under the per-user lock so it is ordered against rotation and revoke-all.
+ */
+export async function issueTokens(user: User, repo: RefreshTokenRepo = drizzleRefreshTokenRepo): Promise<TokenPair> {
+  return repo.transaction(async (tx) => {
+    await tx.lockUser(user.id)
+    const accessToken = generateAccessToken({ userId: user.id, email: user.email, plan: user.plan })
+    const refresh = generateRefreshToken(user.id)
+    await persistRefreshToken(tx, user.id, refresh)
+    return { accessToken, refreshToken: refresh.token }
+  })
 }
 
 /**
@@ -219,53 +238,70 @@ export async function loginUser(email: string, password: string): Promise<{ user
 
 type RotationOutcome =
   | { kind: 'ok'; tokens: TokenPair }
+  | { kind: 'retry' }
   | { kind: 'reuse' }
   | { kind: 'invalid' }
   | { kind: 'inactive' }
 
 /**
  * Rotate a refresh token atomically.
+ * - The user's row is locked first, so rotation, issuance and revoke-all for one user
+ *   are serialized (a revoke-all cannot miss a token issued concurrently).
  * - The old token is revoked with a conditional UPDATE so two concurrent refreshes
  *   cannot both succeed.
- * - Presenting an already-revoked token is treated as theft: every token for that
- *   user is revoked.
+ * - Re-presenting a token rotated within REFRESH_REUSE_GRACE_MS (a racing tab) yields
+ *   REFRESH_RETRY; the caller should reread its stored tokens. Any other replay of a
+ *   revoked token is treated as theft: every token for that user is revoked.
  * - The user is reloaded so deactivation and plan changes take effect immediately.
  */
 export async function refreshAccessToken(
   refreshToken: string,
-  repo: RefreshTokenRepo = drizzleRefreshTokenRepo
+  repo: RefreshTokenRepo = drizzleRefreshTokenRepo,
+  now: () => number = Date.now
 ): Promise<TokenPair> {
   const claims = verifyRefreshToken(refreshToken)
   const tokenHash = digestToken(refreshToken)
 
   const outcome = await repo.transaction<RotationOutcome>(async (tx) => {
-    const revoked = await tx.revokeActive(claims.jti, tokenHash)
+    const user = await tx.lockUser(claims.userId)
+    if (!user) return { kind: 'invalid' }
+
+    const successor = generateRefreshToken(user.id)
+    const revoked = await tx.revokeActive(claims.jti, tokenHash, successor.jti)
 
     if (!revoked) {
       const existing = await tx.findByJti(claims.jti)
-      if (existing && existing.isRevoked && digestsEqual(existing.tokenHash, tokenHash)) {
-        await tx.revokeAllForUser(existing.userId)
-        return { kind: 'reuse' }
+      if (!existing || !existing.isRevoked || existing.userId !== user.id || !digestsEqual(existing.tokenHash, tokenHash)) {
+        return { kind: 'invalid' }
       }
+      const revokedAt = existing.revokedAt?.getTime() ?? 0
+      if (existing.replacedBy && now() - revokedAt < REFRESH_REUSE_GRACE_MS) {
+        const next = await tx.findByJti(existing.replacedBy)
+        if (next && !next.isRevoked) return { kind: 'retry' }
+      }
+      await tx.revokeAllForUser(user.id)
+      return { kind: 'reuse' }
+    }
+
+    if (revoked.userId !== user.id || revoked.expiresAt.getTime() <= now()) {
       return { kind: 'invalid' }
     }
 
-    if (revoked.userId !== claims.userId || revoked.expiresAt.getTime() <= Date.now()) {
-      return { kind: 'invalid' }
-    }
-
-    const user = await tx.getUser(revoked.userId)
-    if (!user || !user.isActive) {
-      await tx.revokeAllForUser(revoked.userId)
+    if (!user.isActive) {
+      await tx.revokeAllForUser(user.id)
       return { kind: 'inactive' }
     }
 
-    return { kind: 'ok', tokens: await issueTokens(user, tx) }
+    await persistRefreshToken(tx, user.id, successor)
+    const accessToken = generateAccessToken({ userId: user.id, email: user.email, plan: user.plan })
+    return { kind: 'ok', tokens: { accessToken, refreshToken: successor.token } }
   })
 
   switch (outcome.kind) {
     case 'ok':
       return outcome.tokens
+    case 'retry':
+      throw new Error('REFRESH_RETRY')
     case 'reuse':
       throw new Error('REFRESH_TOKEN_REUSED')
     case 'inactive':
@@ -273,6 +309,41 @@ export async function refreshAccessToken(
     default:
       throw new Error('INVALID_REFRESH_TOKEN')
   }
+}
+
+/**
+ * Delete expired refresh tokens and revoked ones older than the retention period.
+ */
+export async function cleanupRefreshTokens(
+  repo: RefreshTokenRepo = drizzleRefreshTokenRepo,
+  now: Date = new Date()
+): Promise<number> {
+  return repo.deleteStale(now, new Date(now.getTime() - REVOKED_TOKEN_RETENTION_MS))
+}
+
+/**
+ * Run cleanupRefreshTokens periodically. The timer is unref'd so it never keeps the
+ * process alive; returns a stop function.
+ */
+export function startRefreshTokenCleanup(
+  intervalMs = 60 * 60 * 1000,
+  cleanup: () => Promise<number> = () => cleanupRefreshTokens()
+): () => void {
+  let running = false
+  const tick = async () => {
+    if (running) return
+    running = true
+    try {
+      await cleanup()
+    } catch (error) {
+      console.error('Refresh token cleanup failed:', error)
+    } finally {
+      running = false
+    }
+  }
+  const timer = setInterval(tick, intervalMs)
+  timer.unref?.()
+  return () => clearInterval(timer)
 }
 
 /**
