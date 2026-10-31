@@ -1,36 +1,35 @@
-# Use Bun official image
+# Build context: repository root (the backend imports the root agent from ../../../src).
+# Image layout mirrors the repo so relative imports resolve:
+#   /app/package.json, /app/node_modules, /app/src          (root Dexter agent)
+#   /app/backend/package.json, /app/backend/node_modules, /app/backend/src
 FROM oven/bun:1 AS base
 WORKDIR /app
 
-# Install dependencies
+# Production dependencies for both packages
 FROM base AS install
-RUN mkdir -p /temp/dev
-COPY package.json bun.lockb /temp/dev/
-RUN cd /temp/dev && bun install --frozen-lockfile
-
-# Install production dependencies only
-RUN mkdir -p /temp/prod
-COPY package.json bun.lockb /temp/prod/
-RUN cd /temp/prod && bun install --frozen-lockfile --production
-
-# Copy source code
-FROM base AS prerelease
-COPY --from=install /temp/dev/node_modules node_modules
-COPY . .
+COPY package.json bun.lock /temp/root/
+# --ignore-scripts skips the root postinstall Chromium download: the browser tool is
+# disabled when running under the web backend (DEXTER_WEB_MODE=1)
+RUN cd /temp/root && bun install --frozen-lockfile --production --ignore-scripts
+COPY backend/package.json backend/bun.lock /temp/backend/
+RUN cd /temp/backend && bun install --frozen-lockfile --production
 
 # Final production image
 FROM base AS release
-COPY --from=install /temp/prod/node_modules node_modules
-COPY --from=prerelease /app/src ./src
-COPY --from=prerelease /app/package.json .
+COPY --from=install /temp/root/node_modules ./node_modules
+COPY --from=install /temp/backend/node_modules ./backend/node_modules
+COPY package.json tsconfig.json ./
+COPY src ./src
+COPY backend/package.json backend/tsconfig.json ./backend/
+COPY backend/src ./backend/src
 
-# Expose port
+WORKDIR /app/backend
+
 EXPOSE 8000
 
-# Set environment
 ENV NODE_ENV=production
 ENV PORT=8000
+ENV DEXTER_WEB_MODE=1
 
-# Start server
 USER bun
 CMD ["bun", "run", "start"]
