@@ -50,8 +50,8 @@ class QueryTimeoutError extends Error {}
 /**
  * Execute a query using the Agent
  * This function runs asynchronously and updates the database as events occur.
- * It always ends with the query in a terminal state (completed, error or cancelled),
- * and `onSettled` (releasing the concurrency slot) runs exactly once, at the latest
+ * Terminal-state persistence is best effort when the database is unavailable.
+ * Independently, `onSettled` (releasing the concurrency slot) runs exactly once, at the latest
  * when the hard timeout fires.
  */
 export async function executeQuery(
@@ -101,7 +101,14 @@ export async function executeQuery(
 
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new QueryTimeoutError(`Query timed out after ${Math.round(deps.timeoutMs / 1000)}s`)), deps.timeoutMs)
+    timer = setTimeout(() => {
+      const error = new QueryTimeoutError(`Query timed out after ${Math.round(deps.timeoutMs / 1000)}s`)
+      stopped = true
+      controller.abort(error)
+      // Independent of Promise.race: error persistence/event delivery may also hang.
+      settle()
+      reject(error)
+    }, deps.timeoutMs)
   })
   const execution = run()
 
@@ -111,7 +118,8 @@ export async function executeQuery(
     stopped = true
     if (error instanceof QueryTimeoutError) {
       controller.abort(error)
-      // The agent may never settle; free the slot now and ignore whatever it does later
+      // Abort is cooperative: in-flight provider work may continue after slot release.
+      // Cancellation of an unresponsive agent is bounded by this same deadline.
       execution.catch(() => {})
       settle()
     } else if (controller.signal.aborted) {

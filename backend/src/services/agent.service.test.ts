@@ -63,6 +63,17 @@ describe('query execution hard timeout', () => {
     expect(released).toBe(true)
   })
 
+  for (const hanging of ['status', 'event'] as const) {
+    test('deadline releases once when ordinary error ' + hanging + ' persistence hangs', async () => {
+      const h = harness(async function* () { throw new Error('early failure') })
+      const overrides = hanging === 'status' ? { updateQueryStatus: never } : { emitEvent: never }
+      void executeQuery('error-' + hanging, 'hello', config, h.onSettled, { ...h.deps, ...overrides })
+      await new Promise(r => setTimeout(r, 80))
+      expect(h.releases).toBe(1)
+      expect(h.signal?.aborted).toBe(true)
+    })
+  }
+
   test('events produced after the timeout are not recorded', async () => {
     let resume!: () => void
     const h = harness(async function* () {
