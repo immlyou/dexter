@@ -1,3 +1,4 @@
+import type { Server } from 'bun'
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
 import authRoutes from './routes/auth'
@@ -61,5 +62,8 @@ console.log(`🚀 Dexter API server starting on port ${port}`)
 
 export default {
   port,
-  fetch: app.fetch
+  fetch(req: Request, server: Server<undefined>) {
+    // Expose the peer address to handlers (used for per-IP rate limits)
+    return app.fetch(req, { clientIp: server.requestIP(req)?.address })
+  }
 }

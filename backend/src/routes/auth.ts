@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { requireAuth } from '../middleware/auth'
+import { rateLimit, limiters, getClientIp, emailKey } from '../middleware/rateLimit'
 import {
   registerUser,
   loginUser,
@@ -20,7 +21,9 @@ const auth = new Hono()
  * POST /api/auth/register
  * Register a new user
  */
-auth.post('/register', zValidator('json', registerSchema), async (c) => {
+auth.post('/register', rateLimit([
+  { limiter: limiters.registerPerIp, key: getClientIp }
+]), zValidator('json', registerSchema), async (c) => {
   try {
     const { email, password, name } = c.req.valid('json')
 
@@ -66,7 +69,10 @@ auth.post('/register', zValidator('json', registerSchema), async (c) => {
  * POST /api/auth/login
  * Login a user
  */
-auth.post('/login', zValidator('json', loginSchema), async (c) => {
+auth.post('/login', rateLimit([
+  { limiter: limiters.loginPerIp, key: getClientIp },
+  { limiter: limiters.loginPerAccount, key: emailKey }
+]), zValidator('json', loginSchema), async (c) => {
   try {
     const { email, password } = c.req.valid('json')
 

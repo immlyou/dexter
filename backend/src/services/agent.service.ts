@@ -3,6 +3,7 @@ import type { AgentEvent } from '../../../src/agent/types.js'
 import { addQueryEvent, updateQueryStatus } from './query.service'
 import type { QueryEventData } from '../types/query'
 import { broadcastQueryEvent } from '../websocket/handler'
+import { clampMaxIterations } from '../config/models'
 
 // Agents run on behalf of untrusted web users: disable tools that can reach arbitrary
 // URLs (the root tool registry skips the browser tool in web mode). Read lazily at Agent.create.
@@ -33,7 +34,8 @@ export async function executeQuery(
     model: string
     provider: string
     maxIterations?: number
-  }
+  },
+  onSettled?: () => void
 ): Promise<void> {
   let finished = false
   const controller = new AbortController()
@@ -44,7 +46,7 @@ export async function executeQuery(
     const agent = Agent.create({
       model: config.model,
       modelProvider: config.provider,
-      maxIterations: config.maxIterations || 10,
+      maxIterations: clampMaxIterations(config.maxIterations),
       signal: AbortSignal.any([controller.signal, AbortSignal.timeout(QUERY_TIMEOUT_MS)])
     })
 
@@ -72,6 +74,7 @@ export async function executeQuery(
     await emitEvent(queryId, errorData)
   } finally {
     runningQueries.delete(queryId)
+    onSettled?.()
   }
 }
 
@@ -168,10 +171,11 @@ export function startQueryExecution(
     model: string
     provider: string
     maxIterations?: number
-  }
+  },
+  onSettled?: () => void
 ): void {
-  // Execute asynchronously without waiting
-  executeQuery(queryId, queryText, config).catch(error => {
+  // Execute asynchronously without waiting; onSettled runs exactly when execution ends
+  executeQuery(queryId, queryText, config, onSettled).catch(error => {
     console.error(`Background execution failed for query ${queryId}:`, error)
   })
 }

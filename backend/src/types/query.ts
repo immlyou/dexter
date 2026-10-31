@@ -1,9 +1,10 @@
 import { z } from 'zod'
+import { MAX_QUERY_LENGTH } from '../config/models'
 
 // Create query schema
 export const createQuerySchema = z.object({
   sessionId: z.string().uuid('Invalid session ID'),
-  query: z.string().min(1, 'Query text is required')
+  query: z.string().trim().min(1, 'Query text is required').max(MAX_QUERY_LENGTH, `Query must be at most ${MAX_QUERY_LENGTH} characters`)
 })
 
 export type CreateQueryInput = z.infer<typeof createQuerySchema>

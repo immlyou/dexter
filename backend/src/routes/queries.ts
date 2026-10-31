@@ -12,7 +12,9 @@ import { startQueryExecution, abortQueryExecution } from '../services/agent.serv
 import { createQuerySchema, listQueriesQuerySchema } from '../types/query'
 import { db } from '../db/client'
 import { sessions } from '../db/schema'
-import { eq } from 'drizzle-orm'
+import { and, eq } from 'drizzle-orm'
+import { rateLimit, limiters, getClientIp, runningQueryLimiter, tooManyRequests } from '../middleware/rateLimit'
+import { isAllowedModel, clampMaxIterations } from '../config/models'
 
 const queriesRouter = new Hono()
 
@@ -23,26 +25,50 @@ queriesRouter.use('*', requireAuth)
  * POST /api/queries
  * Submit a new query
  */
-queriesRouter.post('/', zValidator('json', createQuerySchema), async (c) => {
+queriesRouter.post('/', rateLimit([
+  { limiter: limiters.queryPerUser, key: (c) => c.get('user').id },
+  { limiter: limiters.queryPerIp, key: getClientIp }
+]), zValidator('json', createQuerySchema), async (c) => {
+  const user = c.get('user')
+
+  // Reserve a running-query slot before doing any work; released when execution ends
+  const release = runningQueryLimiter.tryAcquire(user.id)
+  if (!release) {
+    return tooManyRequests(c, 30, `At most ${runningQueryLimiter.maxPerKey} queries may run at once`)
+  }
+  let started = false
+
   try {
-    const user = c.get('user')
     const { sessionId, query } = c.req.valid('json')
+
+    const session = await db.query.sessions.findFirst({
+      where: and(eq(sessions.id, sessionId), eq(sessions.userId, user.id))
+    })
+
+    if (!session) {
+      throw new Error('SESSION_NOT_FOUND')
+    }
+
+    // Sessions created before the allow-list existed may hold arbitrary models
+    if (!isAllowedModel(session.provider, session.model)) {
+      return c.json({
+        error: {
+          code: 'MODEL_NOT_ALLOWED',
+          message: 'The session model is not allowed; update the session to a supported model',
+          timestamp: new Date().toISOString()
+        }
+      }, 400)
+    }
 
     const newQuery = await createQuery(user.id, sessionId, query)
 
-    // Get session config for agent execution
-    const session = await db.query.sessions.findFirst({
-      where: eq(sessions.id, sessionId)
-    })
-
-    if (session) {
-      // Start agent execution in background
-      startQueryExecution(newQuery.id, query, {
-        model: session.model,
-        provider: session.provider,
-        maxIterations: (session.config as { maxIterations?: number })?.maxIterations
-      })
-    }
+    // Start agent execution in background
+    startQueryExecution(newQuery.id, query, {
+      model: session.model,
+      provider: session.provider,
+      maxIterations: clampMaxIterations((session.config as { maxIterations?: unknown } | null)?.maxIterations)
+    }, release)
+    started = true
 
     // Match the WebSocket scheme to how the client reached us (direct or via TLS proxy)
     const isSecure = c.req.header('x-forwarded-proto') === 'https' || new URL(c.req.url).protocol === 'https:'
@@ -77,6 +103,9 @@ queriesRouter.post('/', zValidator('json', createQuerySchema), async (c) => {
         timestamp: new Date().toISOString()
       }
     }, 500)
+    } finally {
+    // Execution owns the slot once started; otherwise free it now
+    if (!started) release()
   }
 })
 

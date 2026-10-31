@@ -1,22 +1,37 @@
 import { z } from 'zod'
+import { providerSchema, modelSchema, isAllowedModel, MAX_ITERATIONS_LIMIT } from '../config/models'
+
+// Session config: only known keys, bounded values
+export const sessionConfigSchema = z.object({
+  maxIterations: z.number().int().min(1).max(MAX_ITERATIONS_LIMIT).optional()
+}).strict()
+
+const modelMatchesProvider = (data: { model?: string; provider?: string }) =>
+  (data.model === undefined) === (data.provider === undefined) &&
+  (data.model === undefined || isAllowedModel(data.provider!, data.model))
+
+const modelMismatch = {
+  message: 'model and provider must be supplied together and the model must belong to the provider',
+  path: ['model']
+}
 
 // Create session schema
 export const createSessionSchema = z.object({
-  name: z.string().min(1, 'Session name is required').optional(),
-  model: z.string().min(1, 'Model is required'),
-  provider: z.string().min(1, 'Provider is required'),
-  config: z.record(z.string(), z.unknown()).optional()
-})
+  name: z.string().min(1, 'Session name is required').max(200).optional(),
+  model: modelSchema,
+  provider: providerSchema,
+  config: sessionConfigSchema.optional()
+}).refine(modelMatchesProvider, modelMismatch)
 
 export type CreateSessionInput = z.infer<typeof createSessionSchema>
 
 // Update session schema
 export const updateSessionSchema = z.object({
-  name: z.string().min(1).optional(),
-  model: z.string().min(1).optional(),
-  provider: z.string().min(1).optional(),
-  config: z.record(z.string(), z.unknown()).optional()
-})
+  name: z.string().min(1).max(200).optional(),
+  model: modelSchema.optional(),
+  provider: providerSchema.optional(),
+  config: sessionConfigSchema.optional()
+}).refine(modelMatchesProvider, modelMismatch)
 
 export type UpdateSessionInput = z.infer<typeof updateSessionSchema>
 

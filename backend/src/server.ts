@@ -85,7 +85,8 @@ export default {
     }
 
     // Handle regular HTTP requests with Hono
-    return app.fetch(req)
+    // Expose the peer address to handlers (used for per-IP rate limits)
+    return app.fetch(req, { clientIp: server.requestIP(req)?.address })
   },
   websocket: websocketHandler
 }
