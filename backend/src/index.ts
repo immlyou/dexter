@@ -1,8 +1,12 @@
 import { Hono } from 'hono'
 import { logger } from 'hono/logger'
 import authRoutes from './routes/auth'
+import { getAuthSecrets } from './config/secrets'
 import sessionsRouter from './routes/sessions'
 import queriesRouter from './routes/queries'
+
+// Refuse to start without strong signing secrets
+getAuthSecrets()
 
 const app = new Hono()
 

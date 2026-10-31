@@ -3,9 +3,13 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { logger } from 'hono/logger'
 import authRoutes from './routes/auth'
+import { getAuthSecrets } from './config/secrets'
 import sessionsRouter from './routes/sessions'
 import queriesRouter from './routes/queries'
 import { websocketHandler, type WebSocketData } from './websocket/handler'
+
+// Refuse to start without strong signing secrets
+getAuthSecrets()
 
 const app = new Hono()
 

@@ -3,9 +3,9 @@ import bcrypt from 'bcrypt'
 import { db } from '../db/client'
 import { users, refreshTokens, type User, type NewUser } from '../db/schema'
 import { eq } from 'drizzle-orm'
+import { getAuthSecrets } from '../config/secrets'
 
 // Environment configuration
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-in-production'
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '15m'
 const REFRESH_TOKEN_EXPIRES_IN = process.env.REFRESH_TOKEN_EXPIRES_IN || '30d'
 const BCRYPT_ROUNDS = 10
@@ -41,7 +41,7 @@ export async function comparePassword(password: string, hash: string): Promise<b
  * Generate an access token (JWT)
  */
 export function generateAccessToken(payload: JWTPayload): string {
-  return jwt.sign(payload, JWT_SECRET, {
+  return jwt.sign(payload, getAuthSecrets().accessSecret, {
     expiresIn: JWT_EXPIRES_IN as string | number,
     issuer: 'dexter-api',
     audience: 'dexter-client'
@@ -52,7 +52,7 @@ export function generateAccessToken(payload: JWTPayload): string {
  * Generate a refresh token
  */
 export function generateRefreshToken(payload: JWTPayload): string {
-  return jwt.sign(payload, JWT_SECRET, {
+  return jwt.sign(payload, getAuthSecrets().accessSecret, {
     expiresIn: REFRESH_TOKEN_EXPIRES_IN as string | number,
     issuer: 'dexter-api',
     audience: 'dexter-client'
@@ -64,7 +64,7 @@ export function generateRefreshToken(payload: JWTPayload): string {
  */
 export function verifyToken(token: string): JWTPayload {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET, {
+    const decoded = jwt.verify(token, getAuthSecrets().accessSecret, {
       issuer: 'dexter-api',
       audience: 'dexter-client'
     }) as JWTPayload

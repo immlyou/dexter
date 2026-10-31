@@ -29,7 +29,8 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://dexter:dexter123@postgres:5432/dexter
-      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-production}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set (>=32 random bytes, e.g. openssl rand -base64 48)}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?JWT_REFRESH_SECRET must be set and differ from JWT_SECRET}
       JWT_EXPIRES_IN: 15m
       REFRESH_TOKEN_EXPIRES_IN: 30d
       CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3000}
