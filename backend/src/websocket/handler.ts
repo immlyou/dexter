@@ -1,11 +1,16 @@
 import type { ServerWebSocket } from 'bun'
-import { verifyToken } from '../services/auth.service'
+import { verifyAccessToken, getUserById } from '../services/auth.service'
 import { getQueryById } from '../services/query.service'
 
 export interface WebSocketData {
   userId: string
   subscribedQueries: Set<string>
+  /** Closes the connection when the access token expires */
+  expiryTimer?: ReturnType<typeof setTimeout>
 }
+
+// Application close code: authentication failed or expired
+export const WS_CLOSE_AUTH = 4001
 
 // Store all connected clients
 const clients = new Map<ServerWebSocket<WebSocketData>, WebSocketData>()
@@ -70,6 +75,7 @@ export const websocketHandler = {
    */
   close(ws: ServerWebSocket<WebSocketData>) {
     console.log('WebSocket client disconnected')
+    clearTimeout(ws.data.expiryTimer)
     clients.delete(ws)
   },
 
@@ -82,18 +88,14 @@ export const websocketHandler = {
 }
 
 /**
- * Handle authentication
+ * Handle authentication. Only access tokens for an existing, active user are accepted,
+ * and the connection is closed when the token expires.
  */
-async function handleAuthentication(ws: ServerWebSocket<WebSocketData>, token: string) {
-  try {
-    const payload = verifyToken(token)
-    ws.data.userId = payload.userId
-
-    ws.send(JSON.stringify({
-      type: 'authenticated',
-      userId: payload.userId
-    }))
-  } catch (error) {
+export async function handleAuthentication(ws: ServerWebSocket<WebSocketData>, token: unknown) {
+  const fail = () => {
+    clearTimeout(ws.data.expiryTimer)
+    ws.data.userId = ''
+    ws.data.subscribedQueries.clear()
     ws.send(JSON.stringify({
       type: 'error',
       error: {
@@ -101,7 +103,35 @@ async function handleAuthentication(ws: ServerWebSocket<WebSocketData>, token: s
         message: 'Authentication failed'
       }
     }))
-    ws.close()
+    ws.close(WS_CLOSE_AUTH, 'Authentication failed')
+  }
+
+  try {
+    if (typeof token !== 'string') return fail()
+    const claims = verifyAccessToken(token)
+    const user = await getUserById(claims.userId)
+    if (!user || !user.isActive) return fail()
+
+    // Re-authenticating as a different user must not keep the previous user's subscriptions
+    if (ws.data.userId && ws.data.userId !== user.id) {
+      ws.data.subscribedQueries.clear()
+    }
+    ws.data.userId = user.id
+
+    clearTimeout(ws.data.expiryTimer)
+    ws.data.expiryTimer = setTimeout(() => {
+      ws.data.userId = ''
+      ws.data.subscribedQueries.clear()
+      ws.close(WS_CLOSE_AUTH, 'Token expired')
+    }, Math.max(0, claims.exp * 1000 - Date.now()))
+
+    ws.send(JSON.stringify({
+      type: 'authenticated',
+      userId: user.id,
+      expiresAt: new Date(claims.exp * 1000).toISOString()
+    }))
+  } catch {
+    fail()
   }
 }
 

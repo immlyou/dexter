@@ -153,7 +153,27 @@ auth.post('/refresh', zValidator('json', refreshTokenSchema), async (c) => {
         }, 401)
       }
 
-      if (error.message === 'TOKEN_EXPIRED' || error.message === 'TOKEN_INVALID') {
+      if (error.message === 'REFRESH_TOKEN_REUSED') {
+        return c.json({
+          error: {
+            code: 'REFRESH_TOKEN_REUSED',
+            message: 'Refresh token was already used; all sessions have been revoked',
+            timestamp: new Date().toISOString()
+          }
+        }, 401)
+      }
+
+      if (error.message === 'USER_INACTIVE') {
+        return c.json({
+          error: {
+            code: 'USER_INACTIVE',
+            message: 'User account is inactive',
+            timestamp: new Date().toISOString()
+          }
+        }, 403)
+      }
+
+      if (error.message === 'TOKEN_EXPIRED' || error.message === 'TOKEN_INVALID' || error.message === 'TOKEN_VERIFICATION_FAILED') {
         return c.json({
           error: {
             code: 'INVALID_REFRESH_TOKEN',
@@ -190,6 +210,16 @@ auth.post('/logout', zValidator('json', logoutSchema), async (c) => {
       message: 'Logged out successfully'
     }, 200)
   } catch (error) {
+    if (error instanceof Error && error.message.startsWith('TOKEN_')) {
+      return c.json({
+        error: {
+          code: 'INVALID_REFRESH_TOKEN',
+          message: 'Invalid or expired refresh token',
+          timestamp: new Date().toISOString()
+        }
+      }, 401)
+    }
+
     console.error('Logout error:', error)
     return c.json({
       error: {

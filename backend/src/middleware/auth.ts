@@ -1,12 +1,12 @@
 import type { Context, Next } from 'hono'
-import { verifyToken, getUserById, type JWTPayload } from '../services/auth.service'
+import { verifyAccessToken, getUserById, type AccessTokenClaims } from '../services/auth.service'
 import type { User } from '../db/schema'
 
 // Extend Hono context to include user
 declare module 'hono' {
   interface ContextVariableMap {
     user: User
-    jwtPayload: JWTPayload
+    jwtPayload: AccessTokenClaims
   }
 }
 
@@ -46,7 +46,7 @@ export async function requireAuth(c: Context, next: Next) {
 
   try {
     // Verify token
-    const payload = verifyToken(token)
+    const payload = verifyAccessToken(token)
 
     // Get user from database
     const user = await getUserById(payload.userId)
@@ -120,7 +120,7 @@ export async function optionalAuth(c: Context, next: Next) {
 
   if (token) {
     try {
-      const payload = verifyToken(token)
+      const payload = verifyAccessToken(token)
       const user = await getUserById(payload.userId)
 
       if (user && user.isActive) {
