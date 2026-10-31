@@ -237,6 +237,18 @@ describe('RateLimiter memory bounds', () => {
     expect(limiter.size).toBe(3)
   })
 
+  test('a full map evicts a batch of lowest-count entries, then admits keys without scanning', () => {
+    const limiter = new RateLimiter(5, 60_000, () => 0, 200)
+    for (let i = 0; i < 200; i++) { limiter.hit(`k${i}`); limiter.hit(`k${i}`) }
+    limiter.hit('k199') // k199 now has 3 hits
+    limiter.hit('new-0') // evicts k0 and k1 (1% of 200, oldest at the minimum count)
+    expect(limiter.size).toBe(199)
+    limiter.hit('new-1') // room left: no eviction
+    expect(limiter.size).toBe(200)
+    for (let i = 0; i < 3; i++) expect(limiter.hit('k2').allowed).toBe(true) // k2 kept its 2 hits
+    expect(limiter.hit('k2').allowed).toBe(false)
+  })
+
   test('expired windows are swept within a minute even for long windows', () => {
     let now = 0
     const limiter = new RateLimiter(1, 3_600_000, () => now)

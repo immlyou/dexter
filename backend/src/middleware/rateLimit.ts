@@ -9,7 +9,7 @@ const MAX_SWEEP_INTERVAL_MS = 60_000
  * In-memory fixed-window rate limiter. Single-process only: state is lost on restart
  * and not shared between replicas (use Redis or similar when scaling out).
  * The key map is bounded: expired windows are swept periodically and, when `maxKeys`
- * is reached, the entry with the fewest hits (oldest first on ties) is evicted. Rejecting
+ * is reached, entries with the fewest hits (oldest first on ties) are evicted. Rejecting
  * new keys instead would let a flood of fresh keys lock out every new client, while
  * evicting by age would let it reset counters under attack: displacing a counter at N
  * hits requires filling the whole map with counters at >= N hits.
@@ -63,18 +63,25 @@ export class RateLimiter {
     this.hits.clear()
   }
 
+  /**
+   * Evict up to 1% of `maxKeys` entries at the lowest count (oldest first), so the O(n)
+   * scans run once per batch of new keys instead of once per new key.
+   */
   private evictLowest(): void {
-    let victim: string | undefined
     let lowest = Infinity
-    // Map iteration is insertion order, so the first minimum is the oldest such entry
+    for (const entry of this.hits.values()) {
+      if (entry.count < lowest) lowest = entry.count
+      if (lowest <= 1) break
+    }
+    let budget = Math.max(1, Math.floor(this.maxKeys / 100))
+    // Map iteration is insertion order, so the oldest minimum-count entries go first
     for (const [key, entry] of this.hits) {
-      if (entry.count < lowest) {
-        victim = key
-        lowest = entry.count
-        if (lowest <= 1) break
+      if (budget === 0) break
+      if (entry.count === lowest) {
+        this.hits.delete(key)
+        budget--
       }
     }
-    if (victim !== undefined) this.hits.delete(victim)
   }
 
   private sweep(now: number, force = false): void {
