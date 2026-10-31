@@ -100,6 +100,18 @@ describe('cross-tab token refresh', () => {
     localStorage.removeItem('refresh_token');
     const refresh = createTokenRefresher({ store: storageStore(), request: vi.fn(), lock: memoryLock() });
     await expect(refresh('access-0')).rejects.toThrow('No refresh token available');
+    expect(localStorage.getItem('access_token')).toBeNull();
+  });
+
+  it('without Web Locks clears the session instead of leaving a stale signed-in state', async () => {
+    vi.stubGlobal('navigator', {});
+    const request = vi.fn();
+    const refresh = createTokenRefresher({ store: storageStore(), request });
+    await expect(refresh('access-0')).rejects.toThrow('Web Locks');
+    expect(request).not.toHaveBeenCalled();
+    expect(localStorage.getItem('access_token')).toBeNull();
+    expect(localStorage.getItem('refresh_token')).toBeNull();
+    vi.unstubAllGlobals();
   });
 });
 

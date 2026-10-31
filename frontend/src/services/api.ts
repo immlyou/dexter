@@ -80,8 +80,8 @@ class ApiClient {
             originalRequest.headers['X-Retry'] = 'true';
             return this.client(originalRequest);
           } catch (refreshError) {
-            // Token cleanup occurs inside the cross-tab lock.
-            // Unsupported browsers fail closed and require a fresh login.
+            // The refresher clears unusable credentials (inside the cross-tab lock, or
+            // outright when Web Locks are unavailable), so /login shows the login form.
             window.location.href = '/login';
             return Promise.reject(refreshError);
           }

@@ -431,6 +431,24 @@ describe('API Client', () => {
         expect(localStorage.getItem('access_token')).toBe('new-access-token');
       });
 
+      it('without Web Locks a 401 ends the session so the login gate shows the form', async () => {
+        vi.stubGlobal('navigator', {});
+        localStorage.setItem('access_token', 'expired-token');
+        localStorage.setItem('refresh_token', 'valid-refresh-token');
+        const refresh = vi.fn(() => HttpResponse.json({ token: 'never', refreshToken: 'never' }));
+        server.use(
+          http.get('http://localhost:3000/api/users/me', () => new HttpResponse(null, { status: 401 })),
+          http.post('http://localhost:3000/api/auth/refresh', refresh),
+        );
+
+        await expect(apiClient.getCurrentUser()).rejects.toThrow('Web Locks');
+
+        expect(refresh).not.toHaveBeenCalled();
+        // App's gate (App.tsx) shows LoginPage exactly when no access token is stored.
+        expect(localStorage.getItem('access_token')).toBeNull();
+        expect(localStorage.getItem('refresh_token')).toBeNull();
+      });
+
       it('should not retry with X-Retry header', async () => {
         localStorage.setItem('access_token', 'token');
 

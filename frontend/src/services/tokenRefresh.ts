@@ -9,11 +9,21 @@ export type RefreshRequest = (refreshToken: string, signal: AbortSignal) => Prom
 export type LockRunner = <T>(name: string, fn: () => Promise<T>) => Promise<T>;
 export const REFRESH_TIMEOUT_MS = 10_000;
 
-/** localStorage cannot provide an atomic cross-tab mutex. Fail closed without Web Locks. */
+export class LockUnavailableError extends Error {
+  constructor() {
+    super('Secure refresh requires Web Locks; please sign in again');
+    this.name = 'LockUnavailableError';
+  }
+}
+
+/**
+ * localStorage cannot provide an atomic cross-tab mutex. Fail closed without Web Locks
+ * (e.g. plain-http, non-localhost origins are not secure contexts).
+ */
 export function defaultLockRunner(): LockRunner {
   return async <T>(name: string, fn: () => Promise<T>): Promise<T> => {
     const locks = typeof navigator !== 'undefined' ? navigator.locks : undefined;
-    if (!locks?.request) throw new Error('Secure refresh requires Web Locks; please sign in again');
+    if (!locks?.request) throw new LockUnavailableError();
     return locks.request(name, { mode: 'exclusive' }, fn);
   };
 }
@@ -40,7 +50,11 @@ export function createTokenRefresher({
       const current = store.getAccessToken();
       if (current && current !== staleAccessToken) return current;
       const refreshToken = store.getRefreshToken();
-      if (!refreshToken) throw new Error('No refresh token available');
+      if (!refreshToken) {
+        // A stale access token alone would keep the app on its signed-in screen.
+        store.clearTokens();
+        throw new Error('No refresh token available');
+      }
 
       const controller = new AbortController();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -64,6 +78,11 @@ export function createTokenRefresher({
       } finally {
         clearTimeout(timer);
       }
+    }).catch((error: unknown) => {
+      // No tab of this origin can ever refresh safely, so end the session (otherwise the
+      // retained tokens keep the signed-in screen up and every 401 loops via /login).
+      if (error instanceof LockUnavailableError) store.clearTokens();
+      throw error;
     }).finally(() => { inFlight = null; });
     return inFlight;
   };

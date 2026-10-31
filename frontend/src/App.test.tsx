@@ -68,6 +68,15 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('login gate', () => {
+  it('shows the login form once the session has been cleared', () => {
+    localStorage.clear();
+    render(<App />);
+    expect(screen.queryByRole('button', { name: '創建 Session' })).toBeNull();
+    expect(document.querySelector('input[type="password"]')).not.toBeNull();
+  });
+});
+
 describe('query submission and live results', () => {
   it('authenticates, subscribes and renders backend event envelopes and the answer', async () => {
     const { socket } = await submitQuery();
