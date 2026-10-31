@@ -10,7 +10,8 @@ export async function migrateWithLock(client: SQL, migrationsFolder: string): Pr
     try {
       await migrate(drizzle(connection), { migrationsFolder })
     } finally {
-      await connection`SELECT pg_advisory_unlock(1684370533, 1)`
+      // Keep the migration error if the session is already broken (the lock dies with it)
+      await connection`SELECT pg_advisory_unlock(1684370533, 1)`.catch(() => {})
     }
   } finally {
     connection.release()

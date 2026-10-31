@@ -1,4 +1,4 @@
-import { and, eq, lt } from 'drizzle-orm'
+import { and, eq, lt, sql } from 'drizzle-orm'
 import { db } from '../db/client'
 import { refreshTokens, users, type RefreshToken, type User } from '../db/schema'
 
@@ -74,6 +74,14 @@ function createRepo(exec: Executor): Omit<RefreshTokenRepo, 'transaction'> {
 export function createDrizzleRefreshTokenRepo(database: Database = db): RefreshTokenRepo {
   return {
     ...createRepo(database),
+    deleteStale(now) {
+      // Every replica schedules cleanup; a transaction-scoped advisory lock lets one run it.
+      return database.transaction(async (tx) => {
+        const rows = await tx.execute<{ locked: boolean }>(sql`SELECT pg_try_advisory_xact_lock(1684370533, 2) AS locked`)
+        if (!rows[0]?.locked) return 0
+        return createRepo(tx as unknown as Executor).deleteStale(now)
+      })
+    },
     transaction(fn) {
       return database.transaction(async (tx) => {
         // Nested transaction calls reuse the outer one

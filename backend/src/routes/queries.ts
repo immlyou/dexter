@@ -27,7 +27,7 @@ queriesRouter.use('*', requireAuth)
  */
 queriesRouter.post('/', rateLimit([
   { limiter: limiters.queryPerUser, key: (c) => c.get('user').id },
-  { limiter: limiters.queryPerIp, key: getClientIp }
+  { limiter: limiters.queryPerIp, key: getClientIp, onMissingKey: 'reject' }
 ]), zValidator('json', createQuerySchema), async (c) => {
   const user = c.get('user')
 

@@ -189,4 +189,19 @@ describe.skipIf(!url)('refresh token rotation on PostgreSQL', () => {
     expect(await cleanupRefreshTokens(repo)).toBeGreaterThanOrEqual(1)
     expect(await active()).toHaveLength(1)
   })
+
+  test('cleanup is skipped while another replica holds the cleanup lock', async () => {
+    await database.insert(schema.refreshTokens).values({
+      userId: user.id, jti: crypto.randomUUID(), tokenHash: crypto.randomUUID(), expiresAt: new Date(Date.now() - 1000)
+    })
+    const holder = await database.$client.reserve()
+    try {
+      await holder`SELECT pg_advisory_lock(1684370533, 2)`
+      expect(await cleanupRefreshTokens(repo)).toBe(0)
+      await holder`SELECT pg_advisory_unlock(1684370533, 2)`
+    } finally {
+      holder.release()
+    }
+    expect(await cleanupRefreshTokens(repo)).toBeGreaterThanOrEqual(1)
+  })
 })
