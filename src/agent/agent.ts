@@ -2,7 +2,7 @@ import { AIMessage } from '@langchain/core/messages';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlm } from '../model/llm.js';
 import { Scratchpad, type ToolContext } from './scratchpad.js';
-import { getTools } from '../tools/registry.js';
+import { getToolRegistry } from '../tools/registry.js';
 import { buildSystemPrompt, buildIterationPrompt, buildFinalAnswerPrompt } from '../agent/prompts.js';
 import { extractTextContent, hasToolCalls } from '../utils/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
@@ -26,11 +26,13 @@ export class Agent {
   private readonly toolMap: Map<string, StructuredToolInterface>;
   private readonly systemPrompt: string;
   private readonly signal?: AbortSignal;
+  private readonly disposers: Array<() => Promise<void>>;
 
   private constructor(
     config: AgentConfig,
     tools: StructuredToolInterface[],
-    systemPrompt: string
+    systemPrompt: string,
+    disposers: Array<() => Promise<void>> = []
   ) {
     this.model = config.model ?? 'claude-sonnet-5-5';
     this.modelProvider = config.modelProvider ?? 'anthropic';
@@ -39,6 +41,7 @@ export class Agent {
     this.toolMap = new Map(tools.map(t => [t.name, t]));
     this.systemPrompt = systemPrompt;
     this.signal = config.signal;
+    this.disposers = disposers;
   }
 
   /**
@@ -46,9 +49,23 @@ export class Agent {
    */
   static create(config: AgentConfig = {}): Agent {
     const model = config.model ?? 'claude-sonnet-5-5';
-    const tools = getTools(model);
+    const registry = getToolRegistry(model);
+    const tools = registry.map((t) => t.tool);
+    const disposers = registry.flatMap((t) => (t.dispose ? [t.dispose] : []));
     const systemPrompt = buildSystemPrompt(model);
-    return new Agent(config, tools, systemPrompt);
+    return new Agent(config, tools, systemPrompt, disposers);
+  }
+
+  /**
+   * Run the agent, releasing per-run tool resources (e.g. browser context) when the
+   * run finishes, fails, or the consumer stops iterating.
+   */
+  async *run(query: string, inMemoryHistory?: InMemoryChatHistory): AsyncGenerator<AgentEvent> {
+    try {
+      yield* this.runLoop(query, inMemoryHistory);
+    } finally {
+      await Promise.allSettled(this.disposers.map((dispose) => dispose()));
+    }
   }
 
   /**
@@ -56,7 +73,7 @@ export class Agent {
    * Anthropic-style context management: full tool results during iteration,
    * with threshold-based clearing of oldest results when context exceeds limit.
    */
-  async *run(query: string, inMemoryHistory?: InMemoryChatHistory): AsyncGenerator<AgentEvent> {
+  private async *runLoop(query: string, inMemoryHistory?: InMemoryChatHistory): AsyncGenerator<AgentEvent> {
     const startTime = Date.now();
     const tokenCounter = new TokenCounter();
     

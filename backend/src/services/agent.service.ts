@@ -4,6 +4,10 @@ import { addQueryEvent, updateQueryStatus } from './query.service'
 import type { QueryEventData } from '../types/query'
 import { broadcastQueryEvent } from '../websocket/handler'
 
+// Agents run on behalf of untrusted web users: disable tools that can reach arbitrary
+// URLs (the root tool registry skips the browser tool in web mode). Read lazily at Agent.create.
+process.env.DEXTER_WEB_MODE = '1'
+
 // Hard upper bound so a hung LLM/tool call can never leave a query in "processing" forever
 const QUERY_TIMEOUT_MS = 10 * 60 * 1000
 

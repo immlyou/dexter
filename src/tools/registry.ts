@@ -2,7 +2,7 @@ import type { StructuredToolInterface } from '@langchain/core/tools';
 import { createFinancialSearch, createFinancialMetrics, createReadFilings } from './finance/index.js';
 import { exaSearch, tavilySearch } from './search/index.js';
 import { skillTool, SKILL_TOOL_DESCRIPTION } from './skill.js';
-import { browserTool } from './browser/index.js';
+import { createBrowserTool } from './browser/index.js';
 import { FINANCIAL_SEARCH_DESCRIPTION, FINANCIAL_METRICS_DESCRIPTION, WEB_SEARCH_DESCRIPTION, READ_FILINGS_DESCRIPTION, BROWSER_DESCRIPTION } from './descriptions/index.js';
 import { discoverSkills } from '../skills/index.js';
 
@@ -16,6 +16,16 @@ export interface RegisteredTool {
   tool: StructuredToolInterface;
   /** Rich description for system prompt (includes when to use, when not to use, etc.) */
   description: string;
+  /** Releases per-run resources held by the tool (e.g. browser context) */
+  dispose?: () => Promise<void>;
+}
+
+/**
+ * The browser tool can reach arbitrary URLs, so it is disabled when Dexter runs
+ * behind the multi-user web backend (which sets DEXTER_WEB_MODE=1).
+ */
+export function isBrowserToolEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env.DEXTER_WEB_MODE !== '1';
 }
 
 /**
@@ -42,12 +52,18 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       tool: createReadFilings(model),
       description: READ_FILINGS_DESCRIPTION,
     },
-    {
-      name: 'browser',
-      tool: browserTool,
-      description: BROWSER_DESCRIPTION,
-    },
   ];
+
+  if (isBrowserToolEnabled()) {
+    // Fresh browser session per registry call, so each agent run gets isolated state
+    const browser = createBrowserTool();
+    tools.push({
+      name: 'browser',
+      tool: browser.tool,
+      description: BROWSER_DESCRIPTION,
+      dispose: browser.dispose,
+    });
+  }
 
   // Include web_search if Exa or Tavily API key is configured (Exa preferred)
   if (process.env.EXASEARCH_API_KEY) {
