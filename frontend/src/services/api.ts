@@ -22,13 +22,26 @@ import type {
   HealthCheck,
   ApiError,
 } from '../types/api';
+import { createTokenRefresher } from './tokenRefresh';
 
 // API Base URL
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 class ApiClient {
   private client: AxiosInstance;
-  private refreshTokenPromise: Promise<string> | null = null;
+  // One refresh at a time across all tabs (Web Locks / storage lock), see tokenRefresh.ts
+  private readonly refreshShared = createTokenRefresher({
+    store: {
+      getAccessToken: () => this.getToken(),
+      getRefreshToken: () => this.getRefreshToken(),
+      setTokens: (accessToken, refreshToken) => {
+        this.setToken(accessToken);
+        this.setRefreshToken(refreshToken);
+      },
+    },
+    request: async (refreshToken) =>
+      (await axios.post<RefreshTokenResponse>(`${API_BASE_URL}/api/auth/refresh`, { refreshToken })).data,
+  });
 
   constructor() {
     this.client = axios.create({
@@ -59,7 +72,8 @@ class ApiClient {
         // Handle 401 Unauthorized - try to refresh token
         if (error.response?.status === 401 && originalRequest && !originalRequest.headers?.['X-Retry']) {
           try {
-            const newToken = await this.refreshAccessToken();
+            const sentWith = String(originalRequest.headers?.Authorization ?? '').replace(/^Bearer /, '') || null;
+            const newToken = await this.refreshAccessToken(sentWith);
             originalRequest.headers = originalRequest.headers || {};
             originalRequest.headers.Authorization = `Bearer ${newToken}`;
             originalRequest.headers['X-Retry'] = 'true';
@@ -99,34 +113,8 @@ class ApiClient {
     localStorage.removeItem('refresh_token');
   }
 
-  private async refreshAccessToken(): Promise<string> {
-    // Prevent multiple simultaneous refresh requests
-    if (this.refreshTokenPromise) {
-      return this.refreshTokenPromise;
-    }
-
-    this.refreshTokenPromise = (async () => {
-      const refreshToken = this.getRefreshToken();
-      if (!refreshToken) {
-        throw new Error('No refresh token available');
-      }
-
-      try {
-        const response = await axios.post<RefreshTokenResponse>(
-          `${API_BASE_URL}/api/auth/refresh`,
-          { refreshToken }
-        );
-
-        const { token, refreshToken: newRefreshToken } = response.data;
-        this.setToken(token);
-        this.setRefreshToken(newRefreshToken);
-        return token;
-      } finally {
-        this.refreshTokenPromise = null;
-      }
-    })();
-
-    return this.refreshTokenPromise;
+  private refreshAccessToken(staleAccessToken: string | null = this.getToken()): Promise<string> {
+    return this.refreshShared(staleAccessToken);
   }
 
   // Auth APIs
