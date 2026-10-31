@@ -23,8 +23,9 @@ export const DEFAULT_MAX_ITERATIONS = 10
 export const MAX_QUERY_LENGTH = 4000
 
 export function isAllowedModel(provider: string, model: string): boolean {
-  const models = (ALLOWED_MODELS as Record<string, readonly string[]>)[provider]
-  return !!models && models.includes(model)
+  // Own-property check so keys like "constructor" never match
+  if (!Object.hasOwn(ALLOWED_MODELS, provider)) return false
+  return (ALLOWED_MODELS as Record<string, readonly string[]>)[provider]!.includes(model)
 }
 
 /**
