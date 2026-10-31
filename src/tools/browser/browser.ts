@@ -23,7 +23,8 @@ async function launchGuardedBrowser(): Promise<Browser> {
   try {
     const browser = await chromium.launch({
       headless: process.env.DEXTER_HEADFUL !== '1',
-      proxy: { server: proxy.server },
+      // Explicit so loopback stays proxied even if PLAYWRIGHT_DISABLE_FORCED_CHROMIUM_PROXIED_LOOPBACK is set
+      proxy: { server: proxy.server, bypass: '<-loopback>' },
       // WebRTC UDP would bypass the proxy
       args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
     });
