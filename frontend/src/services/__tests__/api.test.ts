@@ -1,10 +1,12 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { http, HttpResponse } from 'msw';
 import { server } from '../../test/mocks/server';
 import { apiClient } from '../api';
 
 describe('API Client', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
   beforeEach(() => {
+    vi.stubGlobal('navigator', { locks: { request: (_name: string, _options: unknown, fn: () => Promise<unknown>) => fn() } });
     localStorage.clear();
     localStorage.removeItem('access_token');
     localStorage.removeItem('refresh_token');
@@ -90,6 +92,7 @@ describe('API Client', () => {
 
     describe('refreshToken', () => {
       it('should refresh access token', async () => {
+        localStorage.setItem('refresh_token', 'old-refresh-token');
         const result = await apiClient.refreshToken({
           refreshToken: 'old-refresh-token',
         });
@@ -99,6 +102,7 @@ describe('API Client', () => {
       });
 
       it('should update stored tokens', async () => {
+        localStorage.setItem('refresh_token', 'old-refresh-token');
         await apiClient.refreshToken({
           refreshToken: 'old-refresh-token',
         });

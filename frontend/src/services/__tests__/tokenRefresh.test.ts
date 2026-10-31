@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { AxiosError, AxiosHeaders } from 'axios';
-import { createStorageLock, createTokenRefresher, defaultLockRunner, type LockRunner, type TokenStore } from '../tokenRefresh';
+import { createTokenRefresher, defaultLockRunner, type LockRunner, type TokenStore } from '../tokenRefresh';
 
 /** Shared localStorage-backed store, like two tabs of the same origin. */
 function storageStore(): TokenStore {
   return {
+    clearTokens: () => { localStorage.removeItem('access_token'); localStorage.removeItem('refresh_token'); },
     getAccessToken: () => localStorage.getItem('access_token'),
     getRefreshToken: () => localStorage.getItem('refresh_token'),
     setTokens: (a, r) => {
@@ -22,17 +22,6 @@ function memoryLock(): LockRunner {
     tail = run.catch(() => undefined);
     return run;
   };
-}
-
-function refreshRetryError(): AxiosError {
-  const headers = new AxiosHeaders();
-  return new AxiosError('conflict', '409', { headers }, null, {
-    status: 409,
-    statusText: 'Conflict',
-    headers: {},
-    config: { headers },
-    data: { error: { code: 'REFRESH_RETRY' } },
-  });
 }
 
 describe('cross-tab token refresh', () => {
@@ -54,7 +43,7 @@ describe('cross-tab token refresh', () => {
     const [a, b] = await Promise.all([tabA('access-0'), tabB('access-0')]);
 
     expect(request).toHaveBeenCalledTimes(1);
-    expect(request).toHaveBeenCalledWith('refresh-0');
+    expect(request).toHaveBeenCalledWith('refresh-0', expect.any(AbortSignal));
     expect(a).toBe('access-after-refresh-0');
     expect(b).toBe('access-after-refresh-0');
     expect(localStorage.getItem('refresh_token')).toBe('refresh-0-next');
@@ -77,24 +66,34 @@ describe('cross-tab token refresh', () => {
     expect(request).not.toHaveBeenCalled();
   });
 
-  it('on REFRESH_RETRY uses tokens another client stored meanwhile', async () => {
-    const request = vi.fn(async () => {
-      // A tab without the lock (e.g. older build) finished rotating first
-      localStorage.setItem('access_token', 'access-other');
-      localStorage.setItem('refresh_token', 'refresh-other');
-      throw refreshRetryError();
+  it('a timed-out request clears the uncertain token under the lock and ignores late results', async () => {
+    const lock = memoryLock();
+    let finish!: (value: { token: string; refreshToken: string }) => void;
+    let signal: AbortSignal | undefined;
+    const request = vi.fn((_token: string, abort: AbortSignal) => {
+      signal = abort;
+      return new Promise<{ token: string; refreshToken: string }>(resolve => { finish = resolve; });
     });
-    const refresh = createTokenRefresher({ store: storageStore(), request, lock: memoryLock(), retryDelayMs: 1 });
-    await expect(refresh('access-0')).resolves.toBe('access-other');
+    const first = createTokenRefresher({ store: storageStore(), request, lock, timeoutMs: 15 });
+    const second = createTokenRefresher({ store: storageStore(), request, lock, timeoutMs: 15 });
+    const results = await Promise.allSettled([first('access-0'), second('access-0')]);
+    expect(results.map(r => r.status)).toEqual(['rejected', 'rejected']);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(signal?.aborted).toBe(true);
+    expect(localStorage.getItem('refresh_token')).toBeNull();
+    finish({ token: 'late', refreshToken: 'late' });
+    await Promise.resolve();
+    expect(localStorage.getItem('refresh_token')).toBeNull();
   });
 
-  it('on REFRESH_RETRY with nothing new stored, fails instead of looping', async () => {
+  it('a failed refresh cannot erase a new login', async () => {
     const request = vi.fn(async () => {
-      throw refreshRetryError();
+      storageStore().setTokens('new-login', 'new-session');
+      throw new Error('old session failed');
     });
-    const refresh = createTokenRefresher({ store: storageStore(), request, lock: memoryLock(), retryDelayMs: 1 });
-    await expect(refresh('access-0')).rejects.toBeInstanceOf(AxiosError);
-    expect(request).toHaveBeenCalledTimes(1);
+    const refresh = createTokenRefresher({ store: storageStore(), request, lock: memoryLock() });
+    await expect(refresh('access-0')).rejects.toThrow('old session failed');
+    expect(localStorage.getItem('refresh_token')).toBe('new-session');
   });
 
   it('fails without a refresh token', async () => {
@@ -118,26 +117,11 @@ describe('lock runners', () => {
     expect(request).toHaveBeenCalledWith('x', { mode: 'exclusive' }, expect.any(Function));
   });
 
-  it('storage lock gives mutual exclusion and releases on error', async () => {
-    const lock = createStorageLock(localStorage, { pollMs: 5, settleMs: 5 });
-    let inside = 0;
-    let maxInside = 0;
-    const work = async () => {
-      inside++;
-      maxInside = Math.max(maxInside, inside);
-      await new Promise((r) => setTimeout(r, 15));
-      inside--;
-    };
-    await Promise.all([lock('n', work), lock('n', work), lock('n', work)]);
-    expect(maxInside).toBe(1);
-
-    await expect(lock('n', async () => { throw new Error('x'); })).rejects.toThrow('x');
-    expect(localStorage.getItem('lock:n')).toBeNull();
-  });
-
-  it('storage lock takes over an expired claim', async () => {
-    localStorage.setItem('lock:n', JSON.stringify({ id: 'dead-tab', exp: Date.now() - 1 }));
-    const lock = createStorageLock(localStorage, { pollMs: 5, settleMs: 5 });
-    await expect(lock('n', async () => 'ok')).resolves.toBe('ok');
+  it('without Web Locks never calls the refresh operation, even with an expired storage claim', async () => {
+    vi.stubGlobal('navigator', {});
+    localStorage.setItem('lock:n', JSON.stringify({ id: 'dead', exp: 0 }));
+    const operation = vi.fn(async () => 'unsafe');
+    await expect(defaultLockRunner()('n', operation)).rejects.toThrow('Web Locks');
+    expect(operation).not.toHaveBeenCalled();
   });
 });

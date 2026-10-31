@@ -22,16 +22,17 @@ import type {
   HealthCheck,
   ApiError,
 } from '../types/api';
-import { createTokenRefresher } from './tokenRefresh';
+import { createTokenRefresher, REFRESH_TIMEOUT_MS } from './tokenRefresh';
 
 // API Base URL
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
 class ApiClient {
   private client: AxiosInstance;
-  // One refresh at a time across all tabs (Web Locks / storage lock), see tokenRefresh.ts
+  // One refresh at a time across all tabs (Web Locks), see tokenRefresh.ts
   private readonly refreshShared = createTokenRefresher({
     store: {
+      clearTokens: () => this.clearTokens(),
       getAccessToken: () => this.getToken(),
       getRefreshToken: () => this.getRefreshToken(),
       setTokens: (accessToken, refreshToken) => {
@@ -39,8 +40,8 @@ class ApiClient {
         this.setRefreshToken(refreshToken);
       },
     },
-    request: async (refreshToken) =>
-      (await axios.post<RefreshTokenResponse>(`${API_BASE_URL}/api/auth/refresh`, { refreshToken })).data,
+    request: async (refreshToken, signal) =>
+      (await axios.post<RefreshTokenResponse>(`${API_BASE_URL}/api/auth/refresh`, { refreshToken }, { signal, timeout: REFRESH_TIMEOUT_MS })).data,
   });
 
   constructor() {
@@ -79,8 +80,8 @@ class ApiClient {
             originalRequest.headers['X-Retry'] = 'true';
             return this.client(originalRequest);
           } catch (refreshError) {
-            // Refresh failed, clear tokens and redirect to login
-            this.clearTokens();
+            // Token cleanup occurs inside the cross-tab lock.
+            // Unsupported browsers fail closed and require a fresh login.
             window.location.href = '/login';
             return Promise.reject(refreshError);
           }
@@ -141,10 +142,9 @@ class ApiClient {
   }
 
   async refreshToken(data: RefreshTokenRequest): Promise<RefreshTokenResponse> {
-    const response = await this.client.post<RefreshTokenResponse>('/api/auth/refresh', data);
-    this.setToken(response.data.token);
-    this.setRefreshToken(response.data.refreshToken);
-    return response.data;
+    if (data.refreshToken !== this.getRefreshToken()) throw new Error('Refresh token does not match the stored session');
+    const token = await this.refreshShared(this.getToken());
+    return { token, refreshToken: this.getRefreshToken()! };
   }
 
   // Session APIs

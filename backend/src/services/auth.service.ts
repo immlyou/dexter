@@ -12,17 +12,6 @@ const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '15m'
 const REFRESH_TOKEN_EXPIRES_IN = process.env.REFRESH_TOKEN_EXPIRES_IN || '30d'
 const BCRYPT_ROUNDS = 10
 
-function envSeconds(name: string, fallback: number, max: number): number {
-  const n = Number.parseInt(process.env[name] ?? '', 10)
-  return Number.isFinite(n) && n >= 0 ? Math.min(n, max) : fallback
-}
-
-// A token rotated less than this long ago may be re-presented (e.g. by a second tab
-// racing the first) without being treated as theft: the caller gets REFRESH_RETRY.
-export const REFRESH_REUSE_GRACE_MS = envSeconds('REFRESH_REUSE_GRACE_SECONDS', 20, 60) * 1000
-// Revoked rows are kept this long so replays are still detected as reuse, then deleted
-const REVOKED_TOKEN_RETENTION_MS = envSeconds('REVOKED_TOKEN_RETENTION_SECONDS', 7 * 24 * 3600, 365 * 24 * 3600) * 1000
-
 const ISSUER = 'dexter-api'
 // Distinct audiences so one token type can never be replayed as the other
 export const ACCESS_AUDIENCE = 'dexter-client'
@@ -238,7 +227,6 @@ export async function loginUser(email: string, password: string): Promise<{ user
 
 type RotationOutcome =
   | { kind: 'ok'; tokens: TokenPair }
-  | { kind: 'retry' }
   | { kind: 'reuse' }
   | { kind: 'invalid' }
   | { kind: 'inactive' }
@@ -249,9 +237,8 @@ type RotationOutcome =
  *   are serialized (a revoke-all cannot miss a token issued concurrently).
  * - The old token is revoked with a conditional UPDATE so two concurrent refreshes
  *   cannot both succeed.
- * - Re-presenting a token rotated within REFRESH_REUSE_GRACE_MS (a racing tab) yields
- *   REFRESH_RETRY; the caller should reread its stored tokens. Any other replay of a
- *   revoked token is treated as theft: every token for that user is revoked.
+ * - Every replay of a revoked token revokes all tokens for that user. Cross-tab
+ *   coordination belongs exclusively on the client; there is no reuse grace window.
  * - The user is reloaded so deactivation and plan changes take effect immediately.
  */
 export async function refreshAccessToken(
@@ -274,11 +261,6 @@ export async function refreshAccessToken(
       if (!existing || !existing.isRevoked || existing.userId !== user.id || !digestsEqual(existing.tokenHash, tokenHash)) {
         return { kind: 'invalid' }
       }
-      const revokedAt = existing.revokedAt?.getTime() ?? 0
-      if (existing.replacedBy && now() - revokedAt < REFRESH_REUSE_GRACE_MS) {
-        const next = await tx.findByJti(existing.replacedBy)
-        if (next && !next.isRevoked) return { kind: 'retry' }
-      }
       await tx.revokeAllForUser(user.id)
       return { kind: 'reuse' }
     }
@@ -300,8 +282,6 @@ export async function refreshAccessToken(
   switch (outcome.kind) {
     case 'ok':
       return outcome.tokens
-    case 'retry':
-      throw new Error('REFRESH_RETRY')
     case 'reuse':
       throw new Error('REFRESH_TOKEN_REUSED')
     case 'inactive':
@@ -312,13 +292,14 @@ export async function refreshAccessToken(
 }
 
 /**
- * Delete expired refresh tokens and revoked ones older than the retention period.
+ * Delete only expired refresh tokens. expiresAt derives from REFRESH_TOKEN_EXPIRES_IN
+ * at issuance, so even a later config change cannot shorten replay evidence retention.
  */
 export async function cleanupRefreshTokens(
   repo: RefreshTokenRepo = drizzleRefreshTokenRepo,
   now: Date = new Date()
 ): Promise<number> {
-  return repo.deleteStale(now, new Date(now.getTime() - REVOKED_TOKEN_RETENTION_MS))
+  return repo.deleteStale(now)
 }
 
 /**
@@ -341,6 +322,7 @@ export function startRefreshTokenCleanup(
       running = false
     }
   }
+  void tick()
   const timer = setInterval(tick, intervalMs)
   timer.unref?.()
   return () => clearInterval(timer)
@@ -354,7 +336,14 @@ export async function logoutUser(
   repo: RefreshTokenRepo = drizzleRefreshTokenRepo
 ): Promise<void> {
   const claims = verifyRefreshToken(refreshToken)
-  await repo.revokeActive(claims.jti, digestToken(refreshToken))
+  await repo.transaction(async (tx) => {
+    await tx.lockUser(claims.userId)
+    const row = await tx.findByJti(claims.jti)
+    if (!row || row.userId !== claims.userId || !digestsEqual(row.tokenHash, digestToken(refreshToken))) return
+    // Logging out with a rotated credential is also replay: kill its successors.
+    if (row.isRevoked) await tx.revokeAllForUser(claims.userId)
+    else await tx.revokeActive(claims.jti, row.tokenHash)
+  })
 }
 
 /**

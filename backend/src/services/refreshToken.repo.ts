@@ -1,4 +1,4 @@
-import { and, eq, isNotNull, lt, or } from 'drizzle-orm'
+import { and, eq, lt } from 'drizzle-orm'
 import { db } from '../db/client'
 import { refreshTokens, users, type RefreshToken, type User } from '../db/schema'
 
@@ -21,8 +21,8 @@ export interface RefreshTokenRepo {
    * can never run concurrently with (and miss) a token being issued.
    */
   lockUser(userId: string): Promise<User | undefined>
-  /** Delete expired tokens and tokens revoked before `revokedBefore`; returns the count. */
-  deleteStale(now: Date, revokedBefore: Date): Promise<number>
+  /** Delete expired tokens only, retaining revoked evidence until JWT expiry. */
+  deleteStale(now: Date): Promise<number>
   /** Run `fn` in a single transaction; repo passed to `fn` is bound to it. */
   transaction<T>(fn: (repo: RefreshTokenRepo) => Promise<T>): Promise<T>
 }
@@ -61,12 +61,9 @@ function createRepo(exec: Executor): Omit<RefreshTokenRepo, 'transaction'> {
       const rows = await exec.select().from(users).where(eq(users.id, userId)).for('no key update')
       return rows[0]
     },
-    async deleteStale(now, revokedBefore) {
+    async deleteStale(now) {
       const rows = await exec.delete(refreshTokens)
-        .where(or(
-          lt(refreshTokens.expiresAt, now),
-          and(eq(refreshTokens.isRevoked, true), isNotNull(refreshTokens.revokedAt), lt(refreshTokens.revokedAt, revokedBefore))
-        ))
+        .where(lt(refreshTokens.expiresAt, now))
         .returning({ id: refreshTokens.id })
       return rows.length
     }

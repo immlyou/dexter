@@ -13,8 +13,7 @@ import {
   logoutUser,
   cleanupRefreshTokens,
   startRefreshTokenCleanup,
-  REFRESH_AUDIENCE,
-  REFRESH_REUSE_GRACE_MS
+  REFRESH_AUDIENCE
 } from './auth.service'
 import type { RefreshTokenRepo } from './refreshToken.repo'
 import type { RefreshToken, User } from '../db/schema'
@@ -69,9 +68,9 @@ class MemoryRepo implements RefreshTokenRepo {
   async lockUser(): Promise<User | undefined> {
     throw new Error('lockUser must be called inside a transaction')
   }
-  async deleteStale(now: Date, revokedBefore: Date) {
+  async deleteStale(now: Date) {
     const before = this.rows.length
-    this.rows = this.rows.filter((r) => !(r.expiresAt < now || (r.isRevoked && r.revokedAt && r.revokedAt < revokedBefore)))
+    this.rows = this.rows.filter((r) => !(r.expiresAt < now))
     return before - this.rows.length
   }
   async transaction<T>(fn: (repo: RefreshTokenRepo) => Promise<T>): Promise<T> {
@@ -103,7 +102,6 @@ class MemoryRepo implements RefreshTokenRepo {
   }
 }
 
-const afterGrace = () => Date.now() + REFRESH_REUSE_GRACE_MS + 1000
 
 describe('access/refresh token separation', () => {
   const payload = { userId: 'u1', email: 'a@b.c', plan: 'free' }
@@ -192,23 +190,22 @@ describe('refresh token storage and rotation', () => {
     const second = await refreshAccessToken(first.refreshToken, repo)
     await issueTokens(user, repo) // another device
 
-    await expect(refreshAccessToken(first.refreshToken, repo, afterGrace)).rejects.toThrow('REFRESH_TOKEN_REUSED')
+    await expect(refreshAccessToken(first.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
     expect(repo.active(user.id)).toHaveLength(0)
     // The legitimately rotated token is now dead too
     await expect(refreshAccessToken(second.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
   })
 
-  test('re-presenting a just-rotated token within the grace window asks to retry', async () => {
+  test('an immediate victim replay revokes the thief successor', async () => {
     const first = await issueTokens(user, repo)
     const second = await refreshAccessToken(first.refreshToken, repo)
 
-    await expect(refreshAccessToken(first.refreshToken, repo)).rejects.toThrow('REFRESH_RETRY')
-    // Nothing was revoked: the successor still works
-    expect(repo.active(user.id)).toHaveLength(1)
-    await refreshAccessToken(second.refreshToken, repo)
+    await expect(refreshAccessToken(first.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
+    expect(repo.active(user.id)).toHaveLength(0)
+    await expect(refreshAccessToken(second.refreshToken, repo)).rejects.toThrow('REFRESH_TOKEN_REUSED')
   })
 
-  test('grace window does not cover logged-out tokens', async () => {
+  test('replay of a logged-out token revokes all sessions', async () => {
     const first = await issueTokens(user, repo)
     await issueTokens(user, repo)
     await logoutUser(first.refreshToken, repo)
@@ -216,7 +213,7 @@ describe('refresh token storage and rotation', () => {
     expect(repo.active(user.id)).toHaveLength(0)
   })
 
-  test('grace window does not apply once the successor itself was revoked', async () => {
+  test('replay is rejected when the successor is revoked', async () => {
     const first = await issueTokens(user, repo)
     const second = await refreshAccessToken(first.refreshToken, repo)
     await logoutUser(second.refreshToken, repo)
@@ -226,18 +223,18 @@ describe('refresh token storage and rotation', () => {
   test('replay racing a rotation cannot leave the new token alive', async () => {
     const a = await issueTokens(user, repo)
     const b = await refreshAccessToken(a.refreshToken, repo)
-    // Replay of A (outside grace) races rotation of B; whichever order the lock gives,
+    // Replay of A races rotation of B; whichever order the lock gives,
     // no active token may survive the revoke-all
     repo.insertDelayMs = 20
     const results = await Promise.allSettled([
       refreshAccessToken(b.refreshToken, repo),
-      refreshAccessToken(a.refreshToken, repo, afterGrace)
+      refreshAccessToken(a.refreshToken, repo)
     ])
     expect(results[1].status).toBe('rejected')
     expect(repo.active(user.id)).toHaveLength(0)
   })
 
-  test('concurrent refreshes from two tabs: one rotates, the other is told to retry', async () => {
+  test('concurrent refreshes from two tabs: one rotates, the replay revokes all sessions', async () => {
     const { refreshToken } = await issueTokens(user, repo)
     const results = await Promise.allSettled([
       refreshAccessToken(refreshToken, repo),
@@ -245,8 +242,8 @@ describe('refresh token storage and rotation', () => {
     ])
     expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
     const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult
-    expect(String(rejected.reason)).toContain('REFRESH_RETRY')
-    expect(repo.active(user.id)).toHaveLength(1)
+    expect(String(rejected.reason)).toContain('REFRESH_TOKEN_REUSED')
+    expect(repo.active(user.id)).toHaveLength(0)
   })
 
   test('unknown jti (e.g. deleted row) is invalid, not reuse', async () => {
@@ -283,7 +280,7 @@ describe('refresh token storage and rotation', () => {
 })
 
 describe('refresh token cleanup', () => {
-  test('deletes expired and long-revoked tokens, keeps recent revocations for reuse detection', async () => {
+  test('deletes only expired tokens, even ancient revocations survive until JWT expiry', async () => {
     const repo = new MemoryRepo()
     const user = makeUser()
     repo.users.set(user.id, user)
@@ -296,9 +293,9 @@ describe('refresh token cleanup', () => {
     oldRow.revokedAt = new Date(Date.now() - 400 * 24 * 3600 * 1000)
     repo.rows.push({ ...oldRow, id: 'x', jti: 'expired', tokenHash: 'e', isRevoked: false, revokedAt: null, expiresAt: new Date(Date.now() - 1000) })
 
-    expect(await cleanupRefreshTokens(repo)).toBe(2)
+    expect(await cleanupRefreshTokens(repo)).toBe(1)
     expect(repo.rows.map((r) => r.jti).sort()).toEqual(
-      [verifyRefreshToken(live.refreshToken).jti, verifyRefreshToken(recentlyRevoked.refreshToken).jti].sort()
+      [verifyRefreshToken(live.refreshToken).jti, verifyRefreshToken(recentlyRevoked.refreshToken).jti, verifyRefreshToken(old.refreshToken).jti].sort()
     )
   })
 
@@ -308,6 +305,7 @@ describe('refresh token cleanup', () => {
       calls++
       throw new Error('db down')
     })
+    expect(calls).toBe(1) // Runs immediately at startup, before the first interval.
     await new Promise((r) => setTimeout(r, 30))
     stop()
     const seen = calls
