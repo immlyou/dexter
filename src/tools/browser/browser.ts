@@ -33,7 +33,8 @@ function getSharedBrowser(): Promise<Browser> {
 
 /**
  * Browser state for a single agent run: its own context (cookies, storage, tabs),
- * current page and snapshot refs. Every network request is checked against the URL guard.
+ * current page and snapshot refs. Routed HTTP requests are checked against the URL guard.
+ * Chromium resolves DNS independently, so this is not a DNS-rebinding boundary.
  */
 export class BrowserSession {
   private context: BrowserContext | null = null;
@@ -46,7 +47,9 @@ export class BrowserSession {
     if (!this.context) {
       const browser = await getSharedBrowser();
       const context = await browser.newContext({ acceptDownloads: false, serviceWorkers: 'block' });
-      // Guard every request (redirects, subresources, link clicks), not just goto()
+      // WebSocket handshakes bypass HTTP routing. Never connect them to a server.
+      await context.routeWebSocket('**/*', (socket) => socket.close());
+      // HTTP routing covers subresources and link clicks, but not each redirect hop.
       await context.route('**/*', async (route) => {
         const reqUrl = route.request().url();
         if (reqUrl.startsWith('data:') || reqUrl.startsWith('blob:')) return route.continue();
