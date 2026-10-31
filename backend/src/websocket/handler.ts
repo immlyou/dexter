@@ -118,12 +118,7 @@ export async function handleAuthentication(ws: ServerWebSocket<WebSocketData>, t
     }
     ws.data.userId = user.id
 
-    clearTimeout(ws.data.expiryTimer)
-    ws.data.expiryTimer = setTimeout(() => {
-      ws.data.userId = ''
-      ws.data.subscribedQueries.clear()
-      ws.close(WS_CLOSE_AUTH, 'Token expired')
-    }, Math.max(0, claims.exp * 1000 - Date.now()))
+    scheduleExpiryClose(ws, claims.exp * 1000)
 
     ws.send(JSON.stringify({
       type: 'authenticated',
@@ -133,6 +128,23 @@ export async function handleAuthentication(ws: ServerWebSocket<WebSocketData>, t
   } catch {
     fail()
   }
+}
+
+// setTimeout delays above 2^31-1 ms overflow and fire immediately
+const MAX_TIMER_MS = 2 ** 31 - 1
+
+function scheduleExpiryClose(ws: ServerWebSocket<WebSocketData>, expiresAtMs: number) {
+  clearTimeout(ws.data.expiryTimer)
+  const remaining = expiresAtMs - Date.now()
+  if (remaining > MAX_TIMER_MS) {
+    ws.data.expiryTimer = setTimeout(() => scheduleExpiryClose(ws, expiresAtMs), MAX_TIMER_MS)
+    return
+  }
+  ws.data.expiryTimer = setTimeout(() => {
+    ws.data.userId = ''
+    ws.data.subscribedQueries.clear()
+    ws.close(WS_CLOSE_AUTH, 'Token expired')
+  }, Math.max(0, remaining))
 }
 
 /**
