@@ -213,12 +213,28 @@ describe('login failure limiting', () => {
 })
 
 describe('RateLimiter memory bounds', () => {
-  test('rejects new keys at capacity without evicting live counters', () => {
-    const limiter = new RateLimiter(1, 60_000, () => 0, 3)
-    for (const k of ['a', 'b', 'c', 'd']) limiter.hit(k)
+  test('a full map still admits new keys and keeps the busiest counters', () => {
+    const limiter = new RateLimiter(3, 60_000, () => 0, 3)
+    for (let i = 0; i < 3; i++) limiter.hit('victim')
+    limiter.hit('a')
+    limiter.hit('b')
+    // Flood of fresh keys (e.g. random emails): each new client is still admitted...
+    for (let i = 0; i < 100; i++) expect(limiter.hit(`flood-${i}`).allowed).toBe(true)
     expect(limiter.size).toBe(3)
-    expect(limiter.hit('a').allowed).toBe(false)
-    expect(limiter.hit('d').allowed).toBe(false)
+    // ...and the counter under attack is never displaced by low-count entries
+    expect(limiter.hit('victim').allowed).toBe(false)
+  })
+
+  test('evicts the oldest of the lowest-count entries', () => {
+    const limiter = new RateLimiter(5, 60_000, () => 0, 3)
+    limiter.hit('a'); limiter.hit('a')
+    limiter.hit('b')
+    limiter.hit('c')
+    limiter.hit('d') // evicts b (count 1, older than c)
+    limiter.hit('a'); limiter.hit('a'); limiter.hit('a')
+    expect(limiter.hit('a').allowed).toBe(false) // a kept its 5 hits
+    expect(limiter.hit('c').allowed).toBe(true)
+    expect(limiter.size).toBe(3)
   })
 
   test('expired windows are swept within a minute even for long windows', () => {
