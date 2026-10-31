@@ -1,11 +1,11 @@
-import { migrate } from 'drizzle-orm/bun-sql/migrator'
+import { migrateWithLock } from './migrateLocked'
 import { db } from './client'
 
 async function runMigrations() {
   console.log('⏳ Running database migrations...')
 
   try {
-    await migrate(db, { migrationsFolder: './src/db/migrations' })
+    await migrateWithLock(db.$client, './src/db/migrations')
     console.log('✅ Migrations completed successfully')
     process.exit(0)
   } catch (error) {
