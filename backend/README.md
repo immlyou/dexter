@@ -28,20 +28,31 @@ High-performance Web API for Dexter Financial Research Agent built with Bun, Hon
 ### Using Docker Compose (Recommended)
 
 ```bash
-# Set required environment variables
+# Required: POSTGRES_PASSWORD, JWT_SECRET, JWT_REFRESH_SECRET (see .env.example)
 export ANTHROPIC_API_KEY=your_key_here
 
-# Start all services
+# Start all services (pending database migrations run automatically at container start)
 docker-compose up -d
-
-# Run database migrations
-docker-compose exec api bun db:migrate
 
 # View logs
 docker-compose logs -f api
 ```
 
-The API will be available at `http://localhost:8000`
+The API listens on `http://127.0.0.1:8000` (loopback only). Put a TLS reverse proxy in
+front of it and set `TRUST_PROXY_HOPS` to the number of proxies; set `API_BIND_ADDRESS=0.0.0.0`
+only if the API must be reachable directly.
+
+### Upgrading and migrations
+
+The container runs `bun src/db/migrate.ts` before starting the server (`RUN_MIGRATIONS=0`
+disables this, e.g. when several replicas start at once; then run `bun db:migrate` once
+yourself before starting the new version).
+
+- **Migration `0001_refresh_token_jti` logs everyone out.** It deletes all stored refresh
+  tokens (they were stored in a format that can no longer be verified), so every user must
+  sign in again after the upgrade. Announce this before deploying. Stop old API instances
+  before migrating: they would keep writing rows the migration cannot convert.
+- Migration `0002_refresh_token_rotation_meta` adds rotation metadata and is non-disruptive.
 
 ### Local Development
 
@@ -277,6 +288,17 @@ bun db:migrate
 - Check browser console for errors
 
 ## Security
+
+Refresh tokens rotate on every use. Token issuance, rotation and revoke-all are serialized
+per user (row lock). Replaying an already-rotated refresh token revokes all of the user's
+sessions, except within `REFRESH_REUSE_GRACE_SECONDS` (default 20s) of the rotation, where
+the API answers `409 REFRESH_RETRY` so a second browser tab can pick up the new tokens.
+Expired refresh tokens, and revoked ones older than `REVOKED_TOKEN_RETENTION_SECONDS`
+(default 7 days), are deleted hourly.
+
+The PostgreSQL integration test for these races is opt-in:
+`TEST_DATABASE_URL=postgres://… bun test src/services/refreshToken.integration.test.ts`
+(it migrates and writes to that database; use a disposable one).
 
 - Passwords hashed with bcrypt (12 rounds)
 - JWT tokens expire after 15 minutes

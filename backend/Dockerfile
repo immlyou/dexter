@@ -22,6 +22,7 @@ COPY package.json tsconfig.json ./
 COPY src ./src
 COPY backend/package.json backend/tsconfig.json ./backend/
 COPY backend/src ./backend/src
+COPY backend/docker-entrypoint.sh ./backend/
 
 WORKDIR /app/backend
 
@@ -37,4 +38,5 @@ ENV PORT=8000
 ENV DEXTER_WEB_MODE=1
 
 USER bun
-CMD ["bun", "run", "start"]
+# Runs migrations before starting (RUN_MIGRATIONS=0 to skip)
+CMD ["sh", "/app/backend/docker-entrypoint.sh"]

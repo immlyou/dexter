@@ -30,8 +30,10 @@ services:
       context: ..
       dockerfile: backend/Dockerfile
     container_name: dexter-api
+    # Loopback only by default: put a TLS reverse proxy in front. Set API_BIND_ADDRESS=0.0.0.0
+    # to expose it directly (then do not enable TRUST_PROXY_HOPS).
     ports:
-      - "8000:8000"
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-8000}:8000"
     environment:
       # POSTGRES_PASSWORD must be URL-safe (e.g. openssl rand -hex 24)
       DATABASE_URL: postgresql://dexter:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/dexter
@@ -44,8 +46,11 @@ services:
       NODE_ENV: production
       # Browser tool is disabled for web users (no Chromium in the image)
       DEXTER_WEB_MODE: "1"
-      # Set to 1 only behind a reverse proxy that overwrites X-Forwarded-For
-      TRUST_PROXY: ${TRUST_PROXY:-0}
+      # Number of reverse proxies in front of the API that append to X-Forwarded-For
+      # (0 = use the socket peer address). Only set this if clients cannot bypass them.
+      TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-0}
+      # Migrations run at container start; set to 0 if you apply them separately
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-1}
       # LLM API Keys (from host environment)
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -55,6 +60,9 @@ services:
       FINANCIAL_DATASETS_API_KEY: ${FINANCIAL_DATASETS_API_KEY:-}
       EXASEARCH_API_KEY: ${EXASEARCH_API_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+    volumes:
+      # Scratchpads and API cache (DEXTER_DATA_DIR, owned by the image's bun user)
+      - dexter_data:/app/backend/.dexter
     depends_on:
       postgres:
         condition: service_healthy
@@ -62,4 +70,6 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  dexter_data:
     driver: local
