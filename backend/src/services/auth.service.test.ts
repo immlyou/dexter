@@ -57,7 +57,7 @@ class MemoryRepo implements RefreshTokenRepo {
   async getUser(userId: string) {
     return this.users.get(userId)
   }
-  async transaction<T>(fn: (repo: RefreshTokenRepo) => Promise<T>) {
+  async transaction<T>(fn: (repo: RefreshTokenRepo) => Promise<T>): Promise<T> {
     return fn(this)
   }
   active(userId: string) {
