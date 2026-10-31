@@ -5,12 +5,14 @@
  * Callers opt in by passing `{ cacheable: true }` to API calls;
  * the cache module unconditionally stores and retrieves keyed JSON.
  *
- * Cache files live in .dexter/cache/ (already gitignored via .dexter/*).
+ * Cache files live in .dexter/cache/ (already gitignored via .dexter/*), or under
+ * DEXTER_DATA_DIR when set.
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync } from 'fs';
-import { join, dirname } from 'path';
+import { dirname } from 'path';
 import { createHash } from 'crypto';
 import { logger } from './logger.js';
+import { dexterDataPath } from './paths.js';
 
 // ============================================================================
 // Types
@@ -28,7 +30,6 @@ interface CacheEntry {
   cachedAt: string;
 }
 
-const CACHE_DIR = '.dexter/cache';
 
 // ============================================================================
 // Helpers
@@ -124,7 +125,7 @@ export function readCache(
   params: Record<string, string | number | string[] | undefined>
 ): { data: Record<string, unknown>; url: string } | null {
   const cacheKey = buildCacheKey(endpoint, params);
-  const filepath = join(CACHE_DIR, cacheKey);
+  const filepath = dexterDataPath('cache', cacheKey);
   const label = describeRequest(endpoint, params);
 
   if (!existsSync(filepath)) {
@@ -164,7 +165,7 @@ export function writeCache(
   url: string
 ): void {
   const cacheKey = buildCacheKey(endpoint, params);
-  const filepath = join(CACHE_DIR, cacheKey);
+  const filepath = dexterDataPath('cache', cacheKey);
   const label = describeRequest(endpoint, params);
 
   const entry: CacheEntry = {

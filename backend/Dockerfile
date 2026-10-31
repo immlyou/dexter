@@ -25,6 +25,11 @@ COPY backend/src ./backend/src
 
 WORKDIR /app/backend
 
+# The code is root-owned and read-only for the runtime user; agent runs write their
+# scratchpads and API cache here instead (mount a volume to keep them across restarts)
+ENV DEXTER_DATA_DIR=/app/backend/.dexter
+RUN mkdir -p "$DEXTER_DATA_DIR" && chown bun:bun "$DEXTER_DATA_DIR"
+
 EXPOSE 8000
 
 ENV NODE_ENV=production
