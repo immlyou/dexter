@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { zValidator } from '@hono/zod-validator'
 import { requireAuth } from '../middleware/auth'
-import { rateLimit, limiters, getClientIp, emailKey } from '../middleware/rateLimit'
+import { rateLimit, limiters, getClientIp, loginAccountKey, recordLoginSuccess } from '../middleware/rateLimit'
 import {
   registerUser,
   loginUser,
@@ -22,7 +22,7 @@ const auth = new Hono()
  * Register a new user
  */
 auth.post('/register', rateLimit([
-  { limiter: limiters.registerPerIp, key: getClientIp }
+  { limiter: limiters.registerPerIp, key: getClientIp, onMissingKey: 'reject' }
 ]), zValidator('json', registerSchema), async (c) => {
   try {
     const { email, password, name } = c.req.valid('json')
@@ -70,13 +70,16 @@ auth.post('/register', rateLimit([
  * Login a user
  */
 auth.post('/login', rateLimit([
+  // Attempts are counted up front (so parallel guesses cannot slip through) and
+  // refunded on success, so effectively only failures count
   { limiter: limiters.loginPerIp, key: getClientIp },
-  { limiter: limiters.loginPerAccount, key: emailKey }
+  { limiter: limiters.loginPerAccount, key: loginAccountKey }
 ]), zValidator('json', loginSchema), async (c) => {
   try {
     const { email, password } = c.req.valid('json')
 
     const { user, tokens } = await loginUser(email, password)
+    await recordLoginSuccess(c)
 
     return c.json({
       userId: user.id,
