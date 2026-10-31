@@ -3,6 +3,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { assertPublicHttpUrl, type LookupFn } from './url-guard.js';
+import { fetchGuarded } from './guarded-fetch.js';
 
 type RefMap = Map<string, { role: string; name?: string; nth?: number }>;
 
@@ -33,8 +34,9 @@ function getSharedBrowser(): Promise<Browser> {
 
 /**
  * Browser state for a single agent run: its own context (cookies, storage, tabs),
- * current page and snapshot refs. Routed HTTP requests are checked against the URL guard.
- * Chromium resolves DNS independently, so this is not a DNS-rebinding boundary.
+ * current page and snapshot refs. Every HTTP request, including each redirect hop, is
+ * checked against the URL guard (see guarded-fetch.ts). Hosts are resolved again for the
+ * connection, so this is not a DNS-rebinding boundary.
  */
 export class BrowserSession {
   private context: BrowserContext | null = null;
@@ -49,13 +51,13 @@ export class BrowserSession {
       const context = await browser.newContext({ acceptDownloads: false, serviceWorkers: 'block' });
       // WebSocket handshakes bypass HTTP routing. Never connect them to a server.
       await context.routeWebSocket('**/*', (socket) => socket.close());
-      // HTTP routing covers subresources and link clicks, but not each redirect hop.
+      // Routing covers navigations, subresources and link clicks; redirects are followed
+      // in fetchGuarded because Chromium would follow them without routing the next hop.
       await context.route('**/*', async (route) => {
         const reqUrl = route.request().url();
         if (reqUrl.startsWith('data:') || reqUrl.startsWith('blob:')) return route.continue();
         try {
-          await assertPublicHttpUrl(reqUrl, this.lookup);
-          await route.continue();
+          await route.fulfill({ response: await fetchGuarded(route, this.lookup) });
         } catch {
           await route.abort('blockedbyclient');
         }
