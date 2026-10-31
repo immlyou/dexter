@@ -3,6 +3,7 @@ import { chromium, type Browser, type BrowserContext, type Page } from 'playwrig
 import { z } from 'zod';
 import { formatToolResult } from '../types.js';
 import { assertPublicHttpUrl, type LookupFn } from './url-guard.js';
+import { startEgressProxy } from './egress-proxy.js';
 
 type RefMap = Map<string, { role: string; name?: string; nth?: number }>;
 
@@ -16,12 +17,30 @@ interface PageWithSnapshotForAI extends Page {
   _snapshotForAI?: (opts: { timeout: number; track: string }) => Promise<SnapshotForAIResult>;
 }
 
+/** Launch Chromium with all traffic forced through the egress proxy, which owns its lifetime. */
+async function launchGuardedBrowser(): Promise<Browser> {
+  const proxy = await startEgressProxy();
+  try {
+    const browser = await chromium.launch({
+      headless: process.env.DEXTER_HEADFUL !== '1',
+      proxy: { server: proxy.server },
+      // WebRTC UDP would bypass the proxy
+      args: ['--force-webrtc-ip-handling-policy=disable_non_proxied_udp'],
+    });
+    browser.on('disconnected', () => void proxy.close());
+    return browser;
+  } catch (err) {
+    await proxy.close();
+    throw err;
+  }
+}
+
 // One Chromium process is shared; all per-query state lives in an isolated BrowserContext.
 let sharedBrowser: Promise<Browser> | null = null;
 
 function getSharedBrowser(): Promise<Browser> {
   if (!sharedBrowser) {
-    const launching = chromium.launch({ headless: process.env.DEXTER_HEADFUL !== '1' });
+    const launching = launchGuardedBrowser();
     sharedBrowser = launching;
     launching.then(
       (b) => b.on('disconnected', () => { if (sharedBrowser === launching) sharedBrowser = null; }),
@@ -33,8 +52,8 @@ function getSharedBrowser(): Promise<Browser> {
 
 /**
  * Browser state for a single agent run: its own context (cookies, storage, tabs),
- * current page and snapshot refs. Routed HTTP requests are checked against the URL guard.
- * Chromium resolves DNS independently, so this is not a DNS-rebinding boundary.
+ * current page and snapshot refs. The egress proxy is the enforcement boundary (every
+ * connection, redirect hop and DNS answer); routing only rejects bad URLs early.
  */
 export class BrowserSession {
   private context: BrowserContext | null = null;
@@ -49,7 +68,7 @@ export class BrowserSession {
       const context = await browser.newContext({ acceptDownloads: false, serviceWorkers: 'block' });
       // WebSocket handshakes bypass HTTP routing. Never connect them to a server.
       await context.routeWebSocket('**/*', (socket) => socket.close());
-      // HTTP routing covers subresources and link clicks, but not each redirect hop.
+      // Early rejection with the session's lookup; redirect hops are enforced by the proxy.
       await context.route('**/*', async (route) => {
         const reqUrl = route.request().url();
         if (reqUrl.startsWith('data:') || reqUrl.startsWith('blob:')) return route.continue();

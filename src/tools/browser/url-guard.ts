@@ -104,9 +104,39 @@ export class UrlNotAllowedError extends Error {
 }
 
 /**
+ * Resolve `host` (a hostname or IP literal, brackets allowed) and return its addresses,
+ * throwing unless every one is public. Connect to a returned address, not to the
+ * hostname, so a second DNS answer cannot redirect the connection (DNS rebinding).
+ */
+export async function resolvePublicHost(host: string, lookup: LookupFn = defaultLookup): Promise<string[]> {
+  const hostname = host.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
+  if (!hostname) throw new UrlNotAllowedError('Missing host');
+
+  if (isIP(hostname)) {
+    if (isBlockedIp(hostname)) throw new UrlNotAllowedError('Destination address is not allowed');
+    return [hostname];
+  }
+
+  if (BLOCKED_HOSTNAMES.has(hostname) || BLOCKED_SUFFIXES.some((s) => hostname.endsWith(s))) {
+    throw new UrlNotAllowedError('Destination host is not allowed');
+  }
+
+  let addresses: string[];
+  try {
+    addresses = await lookup(hostname);
+  } catch {
+    throw new UrlNotAllowedError('Host could not be resolved');
+  }
+  if (addresses.length === 0 || addresses.some((a) => isBlockedIp(a))) {
+    throw new UrlNotAllowedError('Destination address is not allowed');
+  }
+  return addresses;
+}
+
+/**
  * Throw unless `rawUrl` is an http(s) URL whose host resolves only to public addresses.
- * Note: the browser resolves the host again, so per-request checks (see browser.ts) are
- * also applied to narrow DNS-rebinding windows.
+ * The browser's own connections are pinned to checked addresses by the egress proxy
+ * (egress-proxy.ts); this check rejects bad URLs early with a clear error.
  */
 export async function assertPublicHttpUrl(rawUrl: string, lookup: LookupFn = defaultLookup): Promise<URL> {
   let url: URL;
@@ -124,26 +154,6 @@ export async function assertPublicHttpUrl(rawUrl: string, lookup: LookupFn = def
   }
 
   // WHATWG URL already normalizes decimal/octal/hex IPv4 forms; IPv6 keeps brackets
-  const hostname = url.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase();
-  if (!hostname) throw new UrlNotAllowedError('Missing host');
-
-  if (isIP(hostname)) {
-    if (isBlockedIp(hostname)) throw new UrlNotAllowedError('Destination address is not allowed');
-    return url;
-  }
-
-  if (BLOCKED_HOSTNAMES.has(hostname) || BLOCKED_SUFFIXES.some((s) => hostname.endsWith(s))) {
-    throw new UrlNotAllowedError('Destination host is not allowed');
-  }
-
-  let addresses: string[];
-  try {
-    addresses = await lookup(hostname);
-  } catch {
-    throw new UrlNotAllowedError('Host could not be resolved');
-  }
-  if (addresses.length === 0 || addresses.some((a) => isBlockedIp(a))) {
-    throw new UrlNotAllowedError('Destination address is not allowed');
-  }
+  await resolvePublicHost(url.hostname, lookup);
   return url;
 }
