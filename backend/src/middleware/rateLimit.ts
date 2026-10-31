@@ -12,7 +12,7 @@ const MAX_SWEEP_INTERVAL_MS = 60_000
  * is reached, entries with the fewest hits (oldest first on ties) are evicted. Rejecting
  * new keys instead would let a flood of fresh keys lock out every new client, while
  * evicting by age would let it reset counters under attack: displacing a counter at N
- * hits requires filling the whole map with counters at >= N hits.
+ * hits requires filling ~99% of the map with counters at >= N hits.
  */
 export class RateLimiter {
   private readonly hits = new Map<string, { count: number; resetAt: number }>()
@@ -64,22 +64,30 @@ export class RateLimiter {
   }
 
   /**
-   * Evict up to 1% of `maxKeys` entries at the lowest count (oldest first), so the O(n)
-   * scans run once per batch of new keys instead of once per new key.
+   * Evict the 1% of `maxKeys` entries with the fewest hits (oldest first on ties). Always
+   * freeing a full batch keeps the O(n) passes to one per batch of new keys, however the
+   * counts are distributed.
    */
   private evictLowest(): void {
-    let lowest = Infinity
-    for (const entry of this.hits.values()) {
-      if (entry.count < lowest) lowest = entry.count
-      if (lowest <= 1) break
+    const batch = Math.max(1, Math.floor(this.maxKeys / 100))
+    const perCount = new Map<number, number>()
+    for (const { count } of this.hits.values()) perCount.set(count, (perCount.get(count) ?? 0) + 1)
+    // Smallest count whose entries, together with all lower ones, fill the batch
+    let threshold = 0
+    let below = 0
+    for (const count of [...perCount.keys()].sort((a, b) => a - b)) {
+      threshold = count
+      const n = perCount.get(count)!
+      if (below + n >= batch) break
+      below += n
     }
-    let budget = Math.max(1, Math.floor(this.maxKeys / 100))
-    // Map iteration is insertion order, so the oldest minimum-count entries go first
+    // Map iteration is insertion order, so the oldest entries at the threshold go first
+    let atThreshold = batch - below
     for (const [key, entry] of this.hits) {
-      if (budget === 0) break
-      if (entry.count === lowest) {
+      if (entry.count < threshold) this.hits.delete(key)
+      else if (entry.count === threshold && atThreshold > 0) {
         this.hits.delete(key)
-        budget--
+        atThreshold--
       }
     }
   }
