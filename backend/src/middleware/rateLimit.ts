@@ -1,3 +1,4 @@
+import { isIP } from 'node:net'
 import type { Context, MiddlewareHandler } from 'hono'
 
 const DEFAULT_MAX_KEYS = 50_000
@@ -8,7 +9,7 @@ const MAX_SWEEP_INTERVAL_MS = 60_000
  * In-memory fixed-window rate limiter. Single-process only: state is lost on restart
  * and not shared between replicas (use Redis or similar when scaling out).
  * The key map is bounded: expired windows are swept periodically and, when `maxKeys`
- * is reached, the oldest window is evicted (Map preserves insertion order).
+ * is reached, new keys are rejected until space expires; flooding cannot evict existing limits.
  */
 export class RateLimiter {
   private readonly hits = new Map<string, { count: number; resetAt: number }>()
@@ -22,34 +23,33 @@ export class RateLimiter {
   ) {}
 
   /** Record a hit for `key`; returns whether it is allowed and when to retry. */
-  hit(key: string): { allowed: boolean; retryAfterSec: number } {
+  hit(key: string): { allowed: boolean; retryAfterSec: number; refund: () => void } {
     const now = this.now()
     this.sweep(now)
 
     let entry = this.hits.get(key)
     if (!entry || entry.resetAt <= now) {
-      // Re-insert so insertion order tracks window start (oldest first)
+      // A new entry keeps late refunds from decrementing a subsequent window.
       this.hits.delete(key)
-      this.evictIfFull(now)
+      if (this.hits.size >= this.maxKeys) this.sweep(now, true)
+      if (this.hits.size >= this.maxKeys) return { allowed: false, retryAfterSec: Math.ceil(this.windowMs / 1000), refund: () => {} }
       entry = { count: 0, resetAt: now + this.windowMs }
       this.hits.set(key, entry)
     }
-    entry.count++
+    const allowed = entry.count < this.max
+    if (allowed) entry.count++
+    let refunded = false
     return {
-      allowed: entry.count <= this.max,
-      retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000))
+      allowed,
+      retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+      refund: () => {
+        if (allowed && !refunded) {
+          entry.count--
+          if (entry.count === 0 && this.hits.get(key) === entry) this.hits.delete(key)
+        }
+        refunded = true
+      }
     }
-  }
-
-  /** Take back one hit (e.g. an attempt that turned out to succeed). */
-  undo(key: string): void {
-    const entry = this.hits.get(key)
-    if (entry && entry.count > 0) entry.count--
-  }
-
-  /** Forget a key entirely (e.g. after a successful login). */
-  clear(key: string): void {
-    this.hits.delete(key)
   }
 
   get size(): number {
@@ -58,16 +58,6 @@ export class RateLimiter {
 
   reset(): void {
     this.hits.clear()
-  }
-
-  private evictIfFull(now: number): void {
-    if (this.hits.size < this.maxKeys) return
-    this.sweep(now, true)
-    while (this.hits.size >= this.maxKeys) {
-      const oldest = this.hits.keys().next().value
-      if (oldest === undefined) break
-      this.hits.delete(oldest)
-    }
   }
 
   private sweep(now: number, force = false): void {
@@ -116,10 +106,14 @@ export interface ServerEnv {
 /**
  * Number of reverse proxies in front of the server that append to X-Forwarded-For.
  * TRUST_PROXY_HOPS=N trusts the last N entries; legacy TRUST_PROXY=1 means one hop.
+ * N must match the deployed proxy chain exactly; surplus trusted hops can select
+ * attacker-supplied entries. Missing/short chains are not trusted identities.
  */
 export function trustedProxyHops(): number {
-  const hops = Number.parseInt(process.env.TRUST_PROXY_HOPS ?? '', 10)
-  if (Number.isFinite(hops) && hops > 0) return hops
+  if (process.env.TRUST_PROXY_HOPS !== undefined) {
+    const hops = Number(process.env.TRUST_PROXY_HOPS)
+    return Number.isSafeInteger(hops) && hops >= 0 ? hops : 0
+  }
   return process.env.TRUST_PROXY === '1' ? 1 : 0
 }
 
@@ -137,10 +131,27 @@ export function getClientIp(c: Context): string | null {
       .map((part) => part.trim())
       .filter(Boolean)
     const client = chain[chain.length - hops]
-    if (client) return client
+    return client ? normalizeClientIp(client) : null
   }
   const env = c.env as ServerEnv | undefined
-  return env?.clientIp || null
+  return env?.clientIp ? normalizeClientIp(env.clientIp) : null
+}
+
+/** IPv6 clients share a /64 budget; canonicalize mapped IPv4 as IPv4. */
+export function normalizeClientIp(ip: string): string | null {
+  const version = isIP(ip)
+  if (version === 4) return ip
+  if (version !== 6 || ip.includes('%')) return null
+  const canonical = new URL('http://[' + ip + ']').hostname.slice(1, -1)
+  const [left, right] = canonical.split('::')
+  const head = left ? left.split(':') : []
+  const tail = right ? right.split(':') : []
+  const parts = right === undefined ? head : [...head, ...Array<string>(8 - head.length - tail.length).fill('0'), ...tail]
+  const words = parts.map(part => Number.parseInt(part, 16))
+  if (words.slice(0, 5).every(word => word === 0) && words[5] === 0xffff) {
+    return [words[6]! >> 8, words[6]! & 255, words[7]! >> 8, words[7]! & 255].join('.')
+  }
+  return words.slice(0, 4).map(word => word.toString(16)).join(':') + '::/64'
 }
 
 export function tooManyRequests(c: Context, retryAfterSec: number, message = 'Too many requests, please try again later') {
@@ -167,26 +178,37 @@ export interface RateLimitRule {
 /**
  * Middleware applying one or more limiters; each limiter is keyed by its own function.
  */
-export function rateLimit(rules: RateLimitRule[]): MiddlewareHandler {
+export function rateLimit(rules: RateLimitRule[], failuresOnly = false): MiddlewareHandler {
   return async (c, next) => {
-    for (const rule of rules) {
-      const key = await rule.key(c)
-      if (key === null) {
-        if (rule.onMissingKey === 'reject') {
-          return c.json({
-            error: {
-              code: 'CLIENT_ADDRESS_UNKNOWN',
-              message: 'Unable to determine the client address',
-              timestamp: new Date().toISOString()
-            }
-          }, 400)
+    const refunds: Array<() => void> = []
+    let admitted = false
+    try {
+      for (const rule of rules) {
+        const key = await rule.key(c)
+        if (key === null) {
+          if (rule.onMissingKey === 'reject') {
+            return c.json({
+              error: {
+                code: 'CLIENT_ADDRESS_UNKNOWN',
+                message: 'Unable to determine the client address',
+                timestamp: new Date().toISOString()
+              }
+            }, 400)
+          }
+          continue
         }
-        continue
+        const result = rule.limiter.hit(key)
+        if (!result.allowed) return tooManyRequests(c, result.retryAfterSec)
+        refunds.push(result.refund)
       }
-      const result = rule.limiter.hit(key)
-      if (!result.allowed) return tooManyRequests(c, result.retryAfterSec)
+      admitted = true
+      await next()
+    } finally {
+      // Rejected reservations never count; success refunds only this request.
+      if (!admitted || (failuresOnly && (c.res.status < 400 || c.res.status >= 500))) {
+        for (const refund of refunds) refund()
+      }
     }
-    await next()
   }
 }
 
@@ -200,9 +222,10 @@ const HOUR = 60 * MINUTE
 
 // Shared limiter instances (tunable via env)
 export const limiters = {
-  // Login limiters count failed attempts only: the route undoes/clears them on success
+  // Login limiters count failed attempts only: middleware refunds their own reservations on success
   loginPerIp: new RateLimiter(envInt('RATE_LIMIT_LOGIN_PER_IP', 20), 15 * MINUTE),
   loginPerAccount: new RateLimiter(envInt('RATE_LIMIT_LOGIN_PER_ACCOUNT', 10), 15 * MINUTE),
+  loginGlobalAccount: new RateLimiter(envInt('RATE_LIMIT_LOGIN_GLOBAL_ACCOUNT', 100), HOUR),
   registerPerIp: new RateLimiter(envInt('RATE_LIMIT_REGISTER_PER_IP', 5), HOUR),
   queryPerUser: new RateLimiter(envInt('RATE_LIMIT_QUERY_PER_USER', 30), HOUR),
   queryPerIp: new RateLimiter(envInt('RATE_LIMIT_QUERY_PER_IP', 60), HOUR)
@@ -228,16 +251,4 @@ export async function loginAccountKey(c: Context): Promise<string | null> {
   const email = await emailKey(c)
   if (email === null) return null
   return `${email}|${getClientIp(c) ?? '?'}`
-}
-
-/** Refund a successful login: it must not count towards the failure limits. */
-export async function recordLoginSuccess(
-  c: Context,
-  perIp: RateLimiter = limiters.loginPerIp,
-  perAccount: RateLimiter = limiters.loginPerAccount
-): Promise<void> {
-  const ip = getClientIp(c)
-  if (ip) perIp.undo(ip)
-  const accountKey = await loginAccountKey(c)
-  if (accountKey) perAccount.clear(accountKey)
 }

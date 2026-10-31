@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'bun:test'
 import { Hono } from 'hono'
-import { RateLimiter, ConcurrencyLimiter, rateLimit, getClientIp, emailKey, loginAccountKey, recordLoginSuccess } from './rateLimit'
+import { RateLimiter, ConcurrencyLimiter, rateLimit, getClientIp, emailKey, loginAccountKey, normalizeClientIp } from './rateLimit'
 
 describe('RateLimiter', () => {
   test('allows up to max hits per window, then blocks with Retry-After', () => {
@@ -121,6 +121,12 @@ describe('getClientIp with trusted proxies', () => {
     expect(await ipFor('6.6.6.6, 198.51.100.7', { TRUST_PROXY_HOPS: '1' })).toBe('198.51.100.7')
   })
 
+  test('explicit zero or invalid hops override legacy trust', async () => {
+    for (const hops of ['0', '-1', '1junk']) {
+      expect(await ipFor('6.6.6.6', { TRUST_PROXY_HOPS: hops, TRUST_PROXY: '1' })).toBe('10.0.0.2')
+    }
+  })
+
   test('legacy TRUST_PROXY=1 means one hop', async () => {
     expect(await ipFor('6.6.6.6, 198.51.100.7', { TRUST_PROXY: '1' })).toBe('198.51.100.7')
   })
@@ -129,9 +135,9 @@ describe('getClientIp with trusted proxies', () => {
     expect(await ipFor('6.6.6.6, 198.51.100.7, 10.0.0.5', { TRUST_PROXY_HOPS: '2' })).toBe('198.51.100.7')
   })
 
-  test('a chain shorter than the hop count falls back to the socket peer', async () => {
-    expect(await ipFor('198.51.100.7', { TRUST_PROXY_HOPS: '2' })).toBe('10.0.0.2')
-    expect(await ipFor(undefined, { TRUST_PROXY_HOPS: '1' })).toBe('10.0.0.2')
+  test('a chain shorter than the hop count fails closed', async () => {
+    expect(await ipFor('198.51.100.7', { TRUST_PROXY_HOPS: '2' })).toBeNull()
+    expect(await ipFor(undefined, { TRUST_PROXY_HOPS: '1' })).toBeNull()
   })
 
   test('no proxy trust ignores the header entirely', async () => {
@@ -167,10 +173,9 @@ describe('login failure limiting', () => {
     app.post('/login', rateLimit([
       { limiter: perIp, key: getClientIp },
       { limiter: perAccount, key: loginAccountKey }
-    ]), async (c) => {
+    ], true), async (c) => {
       const body = await c.req.json<{ password: string }>()
       if (body.password !== password) return c.json({ error: 'bad' }, 401)
-      await recordLoginSuccess(c, perIp, perAccount)
       return c.json({ ok: true })
     })
     return app
@@ -197,23 +202,22 @@ describe('login failure limiting', () => {
     expect(await attempt(app, '198.51.100.7', 'wrong')).toBe(429)
   })
 
-  test('a success resets the per-account failure count', async () => {
+  test('a success refunds itself without resetting earlier failures', async () => {
     const perAccount = new RateLimiter(2, 60_000)
     const app = loginApp(new RateLimiter(100, 60_000), perAccount, 'right')
     await attempt(app, '198.51.100.7', 'wrong')
     expect(await attempt(app, '198.51.100.7', 'right')).toBe(200)
     expect(await attempt(app, '198.51.100.7', 'wrong')).toBe(401)
-    expect(await attempt(app, '198.51.100.7', 'wrong')).toBe(401)
+    expect(await attempt(app, '198.51.100.7', 'wrong')).toBe(429)
   })
 })
 
 describe('RateLimiter memory bounds', () => {
-  test('evicts the oldest window once maxKeys is reached', () => {
+  test('rejects new keys at capacity without evicting live counters', () => {
     const limiter = new RateLimiter(1, 60_000, () => 0, 3)
     for (const k of ['a', 'b', 'c', 'd']) limiter.hit(k)
     expect(limiter.size).toBe(3)
-    // 'a' was evicted, so it gets a fresh window; 'd' is still limited
-    expect(limiter.hit('a').allowed).toBe(true)
+    expect(limiter.hit('a').allowed).toBe(false)
     expect(limiter.hit('d').allowed).toBe(false)
   })
 
@@ -230,5 +234,75 @@ describe('RateLimiter memory bounds', () => {
     const limiter = new RateLimiter(5, 60_000, () => 0, 1000)
     for (let i = 0; i < 20_000; i++) limiter.hit(`ip-${i}`)
     expect(limiter.size).toBeLessThanOrEqual(1000)
+  })
+})
+
+
+describe('login reservation regressions', () => {
+  test('concurrent successes and denials leave no false failures', async () => {
+    const perIp = new RateLimiter(2, 60_000)
+    const app = new Hono()
+    let resume!: () => void
+    let entered = 0
+    let both!: () => void
+    let ready: Promise<void>
+    let pause: Promise<void>
+    app.post('/', rateLimit([{ limiter: perIp, key: getClientIp }], true), async c => {
+      entered++
+      if (entered === 2) both()
+      await pause
+      return c.text('ok')
+    })
+    const request = () => app.request('/', { method: 'POST' }, { clientIp: '192.0.2.1' })
+    for (let round = 0; round < 3; round++) {
+      entered = 0
+      ready = new Promise<void>(r => { both = r })
+      pause = new Promise<void>(r => { resume = r })
+      const first = request()
+      const second = request()
+      await ready
+      expect((await request()).status).toBe(429)
+      resume()
+      expect((await first).status).toBe(200)
+      expect((await second).status).toBe(200)
+    }
+  })
+
+  test('late refunds cannot erase a newer window', () => {
+    let now = 0
+    const limiter = new RateLimiter(1, 100, () => now)
+    const old = limiter.hit('k')
+    now = 101
+    limiter.hit('k')
+    old.refund()
+    old.refund()
+    expect(limiter.hit('k').allowed).toBe(false)
+  })
+
+  test('denial by a later rule refunds earlier reservations', async () => {
+    const ip = new RateLimiter(2, 60000)
+    const account = new RateLimiter(1, 60000)
+    const app = new Hono()
+    app.post('/', rateLimit([{ limiter: ip, key: getClientIp }, { limiter: account, key: emailKey }], true), c => c.text('bad', 401))
+    const request = (email: string) => app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) }, { clientIp: '192.0.2.1' })
+    expect((await request('a@x.com')).status).toBe(401)
+    for (let i = 0; i < 5; i++) expect((await request('a@x.com')).status).toBe(429)
+    expect((await request('b@x.com')).status).toBe(401)
+  })
+
+  test('global account cap spans source addresses', async () => {
+    const app = new Hono()
+    app.post('/', rateLimit([{ limiter: new RateLimiter(3, 60000), key: emailKey }], true), c => c.text('bad', 401))
+    for (let i = 1; i <= 4; i++) {
+      const res = await app.request('/', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: 'Victim@x.com' }) }, { clientIp: '192.0.2.' + i })
+      expect(res.status).toBe(i <= 3 ? 401 : 429)
+    }
+  })
+
+  test('IPv6 /64 and IPv4-mapped addresses have canonical budgets', () => {
+    expect(normalizeClientIp('2001:db8:abcd:1234::1')).toBe(normalizeClientIp('2001:0db8:abcd:1234:ffff::2'))
+    expect(normalizeClientIp('2001:db8:abcd:1235::1')).not.toBe(normalizeClientIp('2001:db8:abcd:1234::1'))
+    expect(normalizeClientIp('::ffff:192.0.2.1')).toBe('192.0.2.1')
+    expect(normalizeClientIp('spoof')).toBeNull()
   })
 })
