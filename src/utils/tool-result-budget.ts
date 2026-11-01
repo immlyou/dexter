@@ -3,63 +3,50 @@
  *
  * Caps the total tool result content per turn. When parallel tool calls
  * return large results that exceed the budget, the largest results are
- * persisted to disk first.
+ * capped first (persisted to disk in the CLI, truncated in memory in web mode).
  */
 
 import { ToolMessage } from '@langchain/core/messages';
-import { persistLargeResult, buildPersistedContent } from './tool-result-storage.js';
+import { capLargeResult } from './tool-result-storage.js';
 
 /** Maximum total characters across all tool results in a single turn. */
 export const MAX_TURN_RESULT_CHARS = 200_000;
 
+/** Characters kept per result when the budget forces in-memory truncation. */
+export const BUDGET_IN_MEMORY_CHARS = 20_000;
+
 /**
- * Enforce per-turn budget on tool results. Persists the largest results
- * to disk until the total fits under the budget.
+ * Enforce per-turn budget on tool results. Caps the largest results
+ * until the total fits under the budget.
  *
  * Returns the original array if already under budget.
  */
 export function enforceResultBudget(toolMessages: ToolMessage[]): ToolMessage[] {
-  const totalChars = toolMessages.reduce((sum, tm) => {
-    const content = typeof tm.content === 'string' ? tm.content : JSON.stringify(tm.content);
-    return sum + content.length;
-  }, 0);
-
-  if (totalChars <= MAX_TURN_RESULT_CHARS) {
-    return toolMessages;
-  }
-
-  // Build index with content lengths, sort largest first
   const indexed = toolMessages.map((tm, i) => ({
     index: i,
     tm,
     content: typeof tm.content === 'string' ? tm.content : JSON.stringify(tm.content),
   }));
-  const bySize = [...indexed].sort((a, b) => b.content.length - a.content.length);
+  let remaining = indexed.reduce((sum, e) => sum + e.content.length, 0);
 
-  let remaining = totalChars;
-  const toPersist = new Set<number>();
-
-  for (const entry of bySize) {
-    if (remaining <= MAX_TURN_RESULT_CHARS) break;
-    toPersist.add(entry.index);
-    remaining -= entry.content.length;
-    // Add back the preview size (~2KB)
-    remaining += 2_500;
+  if (remaining <= MAX_TURN_RESULT_CHARS) {
+    return toolMessages;
   }
 
-  if (toPersist.size === 0) return toolMessages;
+  // Cap largest first, accounting for the real size of each replacement
+  const replacements = new Map<number, string>();
+  for (const entry of [...indexed].sort((a, b) => b.content.length - a.content.length)) {
+    if (remaining <= MAX_TURN_RESULT_CHARS) break;
+    const replacement = capLargeResult(entry.tm.tool_call_id, entry.content, BUDGET_IN_MEMORY_CHARS);
+    replacements.set(entry.index, replacement);
+    remaining += replacement.length - entry.content.length;
+  }
 
   return toolMessages.map((tm, i) => {
-    if (!toPersist.has(i)) return tm;
-
-    const content = typeof tm.content === 'string' ? tm.content : JSON.stringify(tm.content);
-    const { preview, filePath } = persistLargeResult(
-      tm.name ?? 'unknown',
-      tm.tool_call_id,
-      content,
-    );
+    const replacement = replacements.get(i);
+    if (replacement === undefined) return tm;
     return new ToolMessage({
-      content: buildPersistedContent(filePath, preview, content.length),
+      content: replacement,
       tool_call_id: tm.tool_call_id,
       name: tm.name,
     });

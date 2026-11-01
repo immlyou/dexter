@@ -3,6 +3,7 @@ import { createGetFinancials, createGetMarketData, createReadFilings, createScre
 import { exaSearch, perplexitySearch, tavilySearch, langSearch, WEB_SEARCH_DESCRIPTION, xSearchTool, X_SEARCH_DESCRIPTION } from './search/index.js';
 import { createWebSearchTool, type WebSearchProvider } from './search/web-search.js';
 import { getSetting } from '../utils/config.js';
+import { isWebMode } from '../utils/web-mode.js';
 import type { SearchProviderId } from '../utils/env.js';
 import { skillTool, SKILL_TOOL_DESCRIPTION } from './skill.js';
 import { createWebFetch, WEB_FETCH_DESCRIPTION } from './fetch/web-fetch.js';
@@ -40,10 +41,7 @@ export interface RegisteredTool {
   dispose?: () => Promise<void>;
 }
 
-/** Whether Dexter runs behind the multi-user web backend (which sets DEXTER_WEB_MODE=1). */
-export function isWebMode(env: Record<string, string | undefined> = process.env): boolean {
-  return env.DEXTER_WEB_MODE === '1';
-}
+export { isWebMode };
 
 /**
  * The browser tool can reach arbitrary URLs, so it is disabled when Dexter runs

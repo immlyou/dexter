@@ -6,7 +6,7 @@ import { buildSystemPrompt, loadSoulDocument, loadRulesDocument } from './prompt
 import { extractTextContent, hasToolCalls } from '../utils/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 import { estimateTokens, getAutoCompactThreshold, KEEP_TOOL_USES } from '../utils/tokens.js';
-import { exceedsSizeCap, persistLargeResult, buildPersistedContent } from '../utils/tool-result-storage.js';
+import { exceedsSizeCap, capLargeResult } from '../utils/tool-result-storage.js';
 import { enforceResultBudget } from '../utils/tool-result-budget.js';
 import { formatUserFacingError, isContextOverflowError } from '../utils/errors.js';
 import type { AgentConfig, AgentEvent, CompactionEvent, ContextClearedEvent, MicrocompactEvent, QueueDrainEvent, StreamMode, StreamProgressEvent, TokenUsage } from '../agent/types.js';
@@ -239,13 +239,12 @@ export class Agent {
       // Execute tools concurrently where safe, collect ToolMessages by ID
       let { toolMessages, denied } = yield* this.executeToolsAndCollectMessages(response, ctx);
 
-      // Cap large results (persist to disk, inject preview)
+      // Cap large results (CLI: persist + preview; web: in-memory truncation)
       toolMessages = toolMessages.map(tm => {
         const content = typeof tm.content === 'string' ? tm.content : JSON.stringify(tm.content);
         if (exceedsSizeCap(content)) {
-          const { preview, filePath } = persistLargeResult(tm.name ?? 'unknown', tm.tool_call_id, content);
           return new ToolMessage({
-            content: buildPersistedContent(filePath, preview, content.length),
+            content: capLargeResult(tm.tool_call_id, content),
             tool_call_id: tm.tool_call_id,
             name: tm.name,
           });
