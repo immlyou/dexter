@@ -67,6 +67,14 @@ export const WEB_MODE_TOOLS: ReadonlySet<string> = new Set([
   'skill',
 ]);
 
+/** In web mode, keep only WEB_MODE_TOOLS; applied by the registry and again by Agent.create. */
+export function filterForWebMode<T extends { name: string }>(
+  tools: T[],
+  env: Record<string, string | undefined> = process.env,
+): T[] {
+  return isWebMode(env) ? tools.filter((t) => WEB_MODE_TOOLS.has(t.name)) : tools;
+}
+
 /**
  * Get all registered tools with their descriptions.
  * Conditionally includes tools based on environment configuration.
@@ -263,7 +271,7 @@ export function getToolRegistry(model: string): RegisteredTool[] {
     });
   }
 
-  return isWebMode() ? tools.filter((t) => WEB_MODE_TOOLS.has(t.name)) : tools;
+  return filterForWebMode(tools);
 }
 
 /**

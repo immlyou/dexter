@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { getToolRegistry, isBrowserToolEnabled, WEB_MODE_TOOLS } from './registry.js';
+import { filterForWebMode, getToolRegistry, isBrowserToolEnabled, WEB_MODE_TOOLS } from './registry.js';
 
 describe('browser tool gating', () => {
   test('disabled in web mode', () => {
@@ -48,5 +48,17 @@ describe('web mode tool allow-list', () => {
       if (previous === undefined) delete process.env.DEXTER_WEB_MODE;
       else process.env.DEXTER_WEB_MODE = previous;
     }
+  });
+});
+
+describe('filterForWebMode', () => {
+  const tools = [{ name: 'get_financials' }, { name: 'bash' }, { name: 'read_file' }, { name: 'skill' }];
+
+  test('drops non-allow-listed tools in web mode', () => {
+    expect(filterForWebMode(tools, { DEXTER_WEB_MODE: '1' }).map((t) => t.name)).toEqual(['get_financials', 'skill']);
+  });
+
+  test('keeps everything outside web mode', () => {
+    expect(filterForWebMode(tools, {})).toBe(tools);
   });
 });

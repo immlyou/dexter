@@ -1,7 +1,7 @@
 import { AIMessage, AIMessageChunk, SystemMessage, HumanMessage, ToolMessage, type BaseMessage } from '@langchain/core/messages';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlmWithMessages, streamLlmWithMessages } from '../model/llm.js';
-import { getToolRegistry } from '../tools/registry.js';
+import { filterForWebMode, getToolRegistry } from '../tools/registry.js';
 import { buildSystemPrompt, loadSoulDocument, loadRulesDocument } from './prompts.js';
 import { extractTextContent, hasToolCalls } from '../utils/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
@@ -79,7 +79,8 @@ export class Agent {
 
   static async create(config: AgentConfig = {}): Promise<Agent> {
     const model = config.model ?? DEFAULT_MODEL;
-    let registry = getToolRegistry(model);
+    // Second line of defense: re-apply the web allow-list here in case the registry changes
+    let registry = filterForWebMode(getToolRegistry(model));
     registry = config.toolAllowlist
       ? registry.filter(t => config.toolAllowlist!.includes(t.name))
       : registry;
