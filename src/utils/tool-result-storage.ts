@@ -61,6 +61,7 @@ export function buildPersistedContent(
  * Keep the first `maxChars` characters with a note that the rest was dropped.
  */
 export function buildTruncatedContent(result: string, maxChars: number): string {
+  if (result.length <= maxChars) return result;
   return `${result.slice(0, maxChars)}\n\n[Result truncated: showing the first ${maxChars} of ${result.length} characters. The rest is not available; narrow the request (e.g. fewer tickers or periods) to see more.]`;
 }
 

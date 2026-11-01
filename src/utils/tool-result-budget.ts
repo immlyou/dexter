@@ -33,11 +33,19 @@ export function enforceResultBudget(toolMessages: ToolMessage[]): ToolMessage[] 
     return toolMessages;
   }
 
+  // In-memory truncation keeps at most an equal share of the budget per result
+  // (minus room for the truncation note), so the total always fits.
+  const inMemoryChars = Math.max(
+    0,
+    Math.min(BUDGET_IN_MEMORY_CHARS, Math.floor(MAX_TURN_RESULT_CHARS / toolMessages.length) - 500),
+  );
+
   // Cap largest first, accounting for the real size of each replacement
   const replacements = new Map<number, string>();
   for (const entry of [...indexed].sort((a, b) => b.content.length - a.content.length)) {
     if (remaining <= MAX_TURN_RESULT_CHARS) break;
-    const replacement = capLargeResult(entry.tm.tool_call_id, entry.content, BUDGET_IN_MEMORY_CHARS);
+    const replacement = capLargeResult(entry.tm.tool_call_id, entry.content, inMemoryChars);
+    if (replacement.length >= entry.content.length) continue;
     replacements.set(entry.index, replacement);
     remaining += replacement.length - entry.content.length;
   }

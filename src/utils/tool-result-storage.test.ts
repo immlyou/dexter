@@ -80,6 +80,15 @@ describe('enforceResultBudget', () => {
     expect(existsSync(join(dataDir, 'tool-results'))).toBe(false);
   });
 
+  test('web mode fits the budget even when every result is below the truncation size', () => {
+    process.env.DEXTER_WEB_MODE = '1';
+    const capped = enforceResultBudget(messages(12, 18_000));
+
+    expect(total(capped)).toBeLessThanOrEqual(MAX_TURN_RESULT_CHARS);
+    // No result grows from an appended truncation note
+    expect(capped.every((tm) => String(tm.content).length <= 18_000)).toBe(true);
+  });
+
   test('CLI persists the largest results to fit the budget', () => {
     const capped = enforceResultBudget(messages(5, 49_000));
     expect(total(capped)).toBeLessThanOrEqual(MAX_TURN_RESULT_CHARS);
