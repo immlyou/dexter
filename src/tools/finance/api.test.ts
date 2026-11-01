@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readCache } from '../../utils/cache.js';
-import { api, MAX_PAGES } from './api.js';
+import { api, MAX_PAGES, MAX_AGGREGATE_CHARS } from './api.js';
 import { withTimeout } from './utils.js';
 
 // ---------------------------------------------------------------------------
@@ -182,6 +182,19 @@ describe('api.get pagination hardening', () => {
     expect(calls.length).toBe(MAX_PAGES);
     expect((data.prices as unknown[]).length).toBe(MAX_PAGES);
     expect(data.truncated).toBe(true);
+  });
+
+  test('stops once the aggregate response size reaches the cap, with a warning', async () => {
+    let n = 0;
+    // ~1/3 of the cap per page: the 3rd page crosses it, so no 4th is fetched.
+    const blob = 'x'.repeat(Math.ceil(MAX_AGGREGATE_CHARS / 3));
+    handler = () => jsonResponse({ prices: [{ blob }], next_page_url: `https://api.financialdatasets.ai/prices/?cursor=${++n}` });
+
+    const { data, warnings } = await api.get('/prices/', { ticker: 'AAPL' }, { cacheable: true });
+    expect(calls.length).toBe(3);
+    expect(data.truncated).toBe(true);
+    expect(warnings?.[0]).toMatch(/INCOMPLETE DATA/);
+    expect(readCache('/prices/', { ticker: 'AAPL' })).toBeNull();
   });
 
   test('a complete cacheable result is still cached', async () => {

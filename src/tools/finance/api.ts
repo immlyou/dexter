@@ -10,6 +10,9 @@ export const MAX_PAGES = 100;
 // Per-request (per hop) budget, so a stalled connection can't hang a call
 // that has no caller-supplied abort signal.
 export const REQUEST_TIMEOUT_MS = 30_000;
+// Aggregate cap on raw response text across all pages of one api.get call, so
+// a few oversized pages can't balloon memory or the LLM context.
+export const MAX_AGGREGATE_CHARS = 8_000_000;
 const MAX_REDIRECTS = 5;
 
 // Abort signal for the current tool invocation. Carried implicitly so the ~30
@@ -45,7 +48,7 @@ export interface ApiResponse {
 
 /** Warning attached to every tool result built from a truncated api.get response. */
 export function truncationWarning(label: string): string {
-  return `INCOMPLETE DATA: pagination for ${label} stopped early (page limit reached); `
+  return `INCOMPLETE DATA: pagination for ${label} stopped early (page/size limit reached); `
     + 'later records are missing. Do not treat this result as complete — narrow the query (e.g. a shorter date range or lower limit) if completeness matters.';
 }
 
@@ -117,7 +120,7 @@ async function executeRequest(
   url: string,
   label: string,
   init: RequestInit,
-): Promise<Record<string, unknown>> {
+): Promise<{ data: Record<string, unknown>; size: number }> {
   const apiKey = getApiKey();
 
   if (!apiKey) {
@@ -160,13 +163,25 @@ async function executeRequest(
     throw new Error(`[Financial Datasets API] request failed: ${detail}`);
   }
 
-  const data = await response.json().catch(() => {
+  // Read as text first so pagination can account for the size of each page.
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error(`[Financial Datasets API] network error: ${label} — ${message}`);
+    throw new Error(`[Financial Datasets API] request failed for ${label}: ${message}`);
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch {
     const detail = `invalid JSON (${response.status} ${response.statusText})`;
     logger.error(`[Financial Datasets API] parse error: ${label} — ${detail}`);
     throw new Error(`[Financial Datasets API] request failed: ${detail}`);
-  });
+  }
 
-  return data as Record<string, unknown>;
+  return { data: data as Record<string, unknown>, size: text.length };
 }
 
 export const api = {
@@ -198,7 +213,9 @@ export const api = {
       }
     }
 
-    const data = await executeRequest(url.toString(), label, {});
+    const first = await executeRequest(url.toString(), label, {});
+    const data = first.data;
+    let totalSize = first.size;
 
     // Reassemble the full result: follow next_page_url (absolute and
     // self-contained — request it verbatim) until the last page. This runs
@@ -208,14 +225,15 @@ export const api = {
     let complete = true;
     let nextPageUrl = data.next_page_url;
     while (typeof nextPageUrl === 'string' && nextPageUrl) {
-      if (seen.has(nextPageUrl) || seen.size >= MAX_PAGES) {
+      if (seen.has(nextPageUrl) || seen.size >= MAX_PAGES || totalSize >= MAX_AGGREGATE_CHARS) {
         logger.warn(`[Financial Datasets API] pagination stopped after ${seen.size} pages: ${label}`);
         complete = false;
         break;
       }
       seen.add(nextPageUrl);
       requestSignal.getStore()?.throwIfAborted();
-      const page = await executeRequest(nextPageUrl, label, {});
+      const { data: page, size } = await executeRequest(nextPageUrl, label, {});
+      totalSize += size;
       mergePage(data, page);
       nextPageUrl = page.next_page_url;
     }
@@ -241,7 +259,7 @@ export const api = {
     const label = `POST ${endpoint}`;
     const url = `${BASE_URL}${endpoint}`;
 
-    const data = await executeRequest(url, label, {
+    const { data } = await executeRequest(url, label, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
