@@ -103,6 +103,32 @@ describe('read_filings metadata fetch honours the run signal', () => {
   });
 });
 
+describe('read_filings metadata fetch cancels the sibling branch', () => {
+  test('a failing filings request aborts the still-running item-types pagination', async () => {
+    llmStub = async () => ({ response: { ticker: 'AAPL', filing_types: ['10-K'], limit: 3 } });
+    let n = 0;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), method: init?.method ?? 'GET', signal: init?.signal });
+      if (!String(url).includes('/filings/items/types/')) {
+        return new Response('boom', { status: 500, statusText: 'Internal Server Error' });
+      }
+      await new Promise((r) => setTimeout(r, 5));
+      init?.signal?.throwIfAborted();
+      return json({ '10-K': [], next_page_url: `https://api.financialdatasets.ai/filings/items/types/?cursor=${++n}` });
+    }) as typeof fetch;
+
+    const tool = createReadFilings('gpt-5.5');
+    const parsed = JSON.parse(await tool.invoke({ query: 'AAPL 10-K risks' })) as { data: { error?: string } };
+    const itemCalls = () => calls.filter((c) => c.url.includes('/filings/items/types/'));
+    const countAtReturn = itemCalls().length;
+    await new Promise((r) => setTimeout(r, 50));
+
+    expect(parsed.data.error).toBe('Failed to fetch filings metadata');
+    expect(itemCalls().length).toBe(countAtReturn);
+    expect(itemCalls().every((c) => c.signal?.aborted)).toBe(true);
+  });
+});
+
 describe('stock_screener honours the run signal', () => {
   test('an already-aborted run makes no screener requests', async () => {
     llmStub = async () => {

@@ -195,19 +195,29 @@ export function createReadFilings(model: string): DynamicStructuredTool {
       onProgress?.(`Fetching ${filingPlan.filing_types.join(', ')} filings for ${filingPlan.ticker}...`);
       let filingsResult: { data: unknown[]; sourceUrls: string[]; warnings: string[] };
       let itemTypes: FilingItemTypes;
+      // Promise.all rejects on the first failure but leaves its sibling running;
+      // the group signal cancels whatever is still in flight once either branch
+      // fails or the step settles.
+      const group = new AbortController();
+      const groupSignal = config?.signal ? AbortSignal.any([config.signal, group.signal]) : group.signal;
+      const failFast = <T>(promise: Promise<T>): Promise<T> =>
+        promise.catch((error: unknown) => {
+          group.abort(error);
+          throw error;
+        });
       try {
         const [filingsRaw, fetchedItemTypes] = await withTimeout(
           () => Promise.all([
-            getFilings.invoke({
+            failFast(getFilings.invoke({
               ticker: filingPlan.ticker,
               filing_type: filingPlan.filing_types,
               limit: filingLimit,
-            }),
-            getFilingItemTypes(),
+            })),
+            failFast(getFilingItemTypes()),
           ]),
           SUB_TOOL_TIMEOUT_MS,
           'filings metadata',
-          config?.signal,
+          groupSignal,
         );
         const parsedFilings = JSON.parse(
           typeof filingsRaw === 'string' ? filingsRaw : JSON.stringify(filingsRaw)
@@ -235,6 +245,8 @@ export function createReadFilings(model: string): DynamicStructuredTool {
           },
           []
         );
+      } finally {
+        group.abort();
       }
 
       if (filingsResult.data.length === 0) {
