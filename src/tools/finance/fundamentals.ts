@@ -63,10 +63,11 @@ export const getIncomeStatements = new DynamicStructuredTool({
   schema: FinancialStatementsInputSchema,
   func: async (input) => {
     const params = createParams(input);
-    const { data, url } = await api.get('/financials/income-statements/', params, { cacheable: true, ttlMs: TTL_24H });
+    const { data, url, warnings } = await api.get('/financials/income-statements/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(
       stripFieldsDeep(data.income_statements || {}, REDUNDANT_FINANCIAL_FIELDS),
-      [url]
+      [url],
+      warnings,
     );
   },
 });
@@ -77,10 +78,11 @@ export const getBalanceSheets = new DynamicStructuredTool({
   schema: FinancialStatementsInputSchema,
   func: async (input) => {
     const params = createParams(input);
-    const { data, url } = await api.get('/financials/balance-sheets/', params, { cacheable: true, ttlMs: TTL_24H });
+    const { data, url, warnings } = await api.get('/financials/balance-sheets/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(
       stripFieldsDeep(data.balance_sheets || {}, REDUNDANT_FINANCIAL_FIELDS),
-      [url]
+      [url],
+      warnings,
     );
   },
 });
@@ -91,10 +93,11 @@ export const getCashFlowStatements = new DynamicStructuredTool({
   schema: FinancialStatementsInputSchema,
   func: async (input) => {
     const params = createParams(input);
-    const { data, url } = await api.get('/financials/cash-flow-statements/', params, { cacheable: true, ttlMs: TTL_24H });
+    const { data, url, warnings } = await api.get('/financials/cash-flow-statements/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(
       stripFieldsDeep(data.cash_flow_statements || {}, REDUNDANT_FINANCIAL_FIELDS),
-      [url]
+      [url],
+      warnings,
     );
   },
 });
@@ -105,10 +108,11 @@ export const getAllFinancialStatements = new DynamicStructuredTool({
   schema: FinancialStatementsInputSchema,
   func: async (input) => {
     const params = createParams(input);
-    const { data, url } = await api.get('/financials/', params, { cacheable: true, ttlMs: TTL_24H });
+    const { data, url, warnings } = await api.get('/financials/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(
       stripFieldsDeep(data.financials || {}, REDUNDANT_FINANCIAL_FIELDS),
-      [url]
+      [url],
+      warnings,
     );
   },
 });

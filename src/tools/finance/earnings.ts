@@ -29,13 +29,13 @@ export const getEarnings = new DynamicStructuredTool({
       ticker: ticker || undefined,
       limit: input.limit,
     };
-    const { data, url } = await api.get('/earnings', params, { cacheable: true, ttlMs: TTL_24H });
+    const { data, url, warnings } = await api.get('/earnings', params, { cacheable: true, ttlMs: TTL_24H });
     const records = Array.isArray(data?.earnings) ? data.earnings : [];
 
     if (!ticker || input.limit) {
-      return formatToolResult(records, [url]);
+      return formatToolResult(records, [url], warnings);
     }
 
-    return formatToolResult(records[0] || {}, [url]);
+    return formatToolResult(records[0] || {}, [url], warnings);
   },
 });

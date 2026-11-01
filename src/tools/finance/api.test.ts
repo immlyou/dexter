@@ -167,9 +167,10 @@ describe('api.get pagination hardening', () => {
     const loop = 'https://api.financialdatasets.ai/prices/?cursor=loop';
     handler = () => jsonResponse({ prices: [{ time: 'x' }], next_page_url: loop });
 
-    const { data } = await api.get('/prices/', { ticker: 'AAPL' }, { cacheable: true });
+    const { data, warnings } = await api.get('/prices/', { ticker: 'AAPL' }, { cacheable: true });
     expect(calls.length).toBe(2);
     expect(data.truncated).toBe(true);
+    expect(warnings?.[0]).toMatch(/INCOMPLETE DATA/);
     expect(readCache('/prices/', { ticker: 'AAPL' })).toBeNull();
   });
 

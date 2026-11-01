@@ -171,6 +171,7 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
               args: tc.args,
               data: parsed.data,
               sourceUrls: parsed.sourceUrls || [],
+              warnings: Array.isArray(parsed.warnings) ? (parsed.warnings as string[]) : [],
               error: null,
             };
           } catch (error) {
@@ -179,6 +180,7 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
               args: tc.args,
               data: null,
               sourceUrls: [],
+              warnings: [] as string[],
               error: error instanceof Error ? error.message : String(error),
             };
           }
@@ -213,7 +215,10 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
         }));
       }
 
-      return formatToolResult(combinedData, allUrls);
+      // Surface sub-tool completeness caveats at the top level: formatters may
+      // reshape each result, so they must not be the only carrier.
+      const warnings = results.flatMap((r) => r.warnings.map((w) => `${r.tool}: ${w}`));
+      return formatToolResult(combinedData, allUrls, warnings);
     },
   });
 }

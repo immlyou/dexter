@@ -60,10 +60,11 @@ export const getInsiderOwnership = new DynamicStructuredTool({
       filing_date_gt: input.filing_date_gt,
       filing_date_lt: input.filing_date_lt,
     };
-    const { data, url } = await api.get('/insider-ownership/', params, { cacheable: true, ttlMs: TTL_1H });
+    const { data, url, warnings } = await api.get('/insider-ownership/', params, { cacheable: true, ttlMs: TTL_1H });
     return formatToolResult(
       stripFieldsDeep(data.insider_ownership || [], REDUNDANT_OWNERSHIP_FIELDS),
-      [url]
+      [url],
+      warnings,
     );
   },
 });

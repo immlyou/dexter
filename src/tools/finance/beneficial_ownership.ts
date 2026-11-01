@@ -104,10 +104,10 @@ Use \`type: "activist"\` to isolate 13D stakes. By default each stake's CURRENT 
       filing_date_gt: input.filing_date_gt,
       filing_date_lt: input.filing_date_lt,
     };
-    const { data, url } = await api.get('/beneficial-ownership/', params, {
+    const { data, url, warnings } = await api.get('/beneficial-ownership/', params, {
       cacheable: true,
       ttlMs: TTL_1H,
     });
-    return formatToolResult(data.beneficial_owners ?? [], [url]);
+    return formatToolResult(data.beneficial_owners ?? [], [url], warnings);
   },
 });

@@ -20,8 +20,8 @@ export const getKeyRatios = new DynamicStructuredTool({
   func: async (input) => {
     const ticker = input.ticker.trim().toUpperCase();
     const params = { ticker };
-    const { data, url } = await api.get('/financial-metrics/snapshot/', params, { cacheable: true, ttlMs: TTL_1H });
-    return formatToolResult(data.snapshot || {}, [url]);
+    const { data, url, warnings } = await api.get('/financial-metrics/snapshot/', params, { cacheable: true, ttlMs: TTL_1H });
+    return formatToolResult(data.snapshot || {}, [url], warnings);
   },
 });
 
@@ -82,10 +82,11 @@ export const getHistoricalKeyRatios = new DynamicStructuredTool({
       report_period_lt: input.report_period_lt,
       report_period_lte: input.report_period_lte,
     };
-    const { data, url } = await api.get('/financial-metrics/', params, { cacheable: true, ttlMs: TTL_6H });
+    const { data, url, warnings } = await api.get('/financial-metrics/', params, { cacheable: true, ttlMs: TTL_6H });
     return formatToolResult(
       stripFieldsDeep(data.financial_metrics || [], REDUNDANT_FINANCIAL_FIELDS),
-      [url]
+      [url],
+      warnings,
     );
   },
 });

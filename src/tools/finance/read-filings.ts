@@ -193,7 +193,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
 
       // Steps 2-3: Fetch filings metadata + canonical item types in parallel
       onProgress?.(`Fetching ${filingPlan.filing_types.join(', ')} filings for ${filingPlan.ticker}...`);
-      let filingsResult: { data: unknown[]; sourceUrls: string[] };
+      let filingsResult: { data: unknown[]; sourceUrls: string[]; warnings: string[] };
       let itemTypes: FilingItemTypes;
       try {
         const [filingsRaw, fetchedItemTypes] = await Promise.all([
@@ -206,11 +206,14 @@ export function createReadFilings(model: string): DynamicStructuredTool {
         ]);
         const parsedFilings = JSON.parse(
           typeof filingsRaw === 'string' ? filingsRaw : JSON.stringify(filingsRaw)
-        ) as { data?: unknown; sourceUrls?: unknown };
+        ) as { data?: unknown; sourceUrls?: unknown; warnings?: unknown };
         filingsResult = {
           data: Array.isArray(parsedFilings.data) ? parsedFilings.data : [],
           sourceUrls: Array.isArray(parsedFilings.sourceUrls)
             ? parsedFilings.sourceUrls.filter((u): u is string => typeof u === 'string')
+            : [],
+          warnings: Array.isArray(parsedFilings.warnings)
+            ? parsedFilings.warnings.filter((w): w is string => typeof w === 'string')
             : [],
         };
         itemTypes = fetchedItemTypes;
@@ -237,7 +240,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
             filing_type: filingPlan.filing_types,
             limit: filingLimit,
           },
-        }, filingsResult.sourceUrls);
+        }, filingsResult.sourceUrls, filingsResult.warnings);
       }
 
       const filingCount = filingsResult.data.length;
@@ -256,7 +259,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
         return formatToolResult({ 
           error: 'Failed to select filings to read',
           availableFilings: filingsResult.data,
-        }, filingsResult.sourceUrls || []);
+        }, filingsResult.sourceUrls || [], filingsResult.warnings);
       }
 
       const limitedToolCalls = step2ToolCalls.slice(0, 3);
@@ -278,6 +281,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
               args: tc.args,
               data: parsed.data,
               sourceUrls: parsed.sourceUrls || [],
+              warnings: Array.isArray(parsed.warnings) ? (parsed.warnings as string[]) : [],
               error: null,
             };
           } catch (error) {
@@ -286,6 +290,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
               args: tc.args,
               data: null,
               sourceUrls: [],
+              warnings: [] as string[],
               error: error instanceof Error ? error.message : String(error),
             };
           }
@@ -315,7 +320,11 @@ export function createReadFilings(model: string): DynamicStructuredTool {
         }));
       }
 
-      return formatToolResult(combinedData, allUrls);
+      const warnings = [
+        ...filingsResult.warnings.map((w) => `get_filings: ${w}`),
+        ...results.flatMap((r) => r.warnings.map((w) => `${r.tool}: ${w}`)),
+      ];
+      return formatToolResult(combinedData, allUrls, warnings);
     },
   });
 }

@@ -45,8 +45,9 @@ async function getScreenerFilters(): Promise<Record<string, unknown>> {
     return cachedFilters;
   }
 
-  const { data } = await api.get('/financials/search/screener/filters/', {});
-  cachedFilters = data;
+  const { data, warnings } = await api.get('/financials/search/screener/filters/', {});
+  // Never pin a partial metrics list for the process lifetime.
+  if (!warnings?.length) cachedFilters = data;
   return data;
 }
 

@@ -30,10 +30,11 @@ export const getFinancialSegments = new DynamicStructuredTool({
       period: input.period,
       limit: input.limit,
     };
-    const { data, url } = await api.get('/financials/segments/', params, { cacheable: true, ttlMs: TTL_24H });
+    const { data, url, warnings } = await api.get('/financials/segments/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(
       stripFieldsDeep(data.segmented_financials || [], REDUNDANT_FINANCIAL_FIELDS),
-      [url]
+      [url],
+      warnings,
     );
   },
 });

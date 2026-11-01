@@ -94,11 +94,11 @@ Period filters (report_period / report_period_gte|lte|gt|lt) accept YYYY-MM-DD. 
       report_period_gt: input.report_period_gt,
       report_period_lt: input.report_period_lt,
     };
-    const { data, url } = await api.get('/institutional-holdings/', params, {
+    const { data, url, warnings } = await api.get('/institutional-holdings/', params, {
       cacheable: true,
       ttlMs: TTL_1H,
     });
-    return formatToolResult(data.institutional_holdings ?? [], [url]);
+    return formatToolResult(data.institutional_holdings ?? [], [url], warnings);
   },
 });
 
@@ -117,10 +117,10 @@ export const getInstitutionalInvestors = new DynamicStructuredTool({
     const params: Record<string, string | undefined> = {
       name: input.name,
     };
-    const { data, url } = await api.get('/institutional-holdings/investors', params, {
+    const { data, url, warnings } = await api.get('/institutional-holdings/investors', params, {
       cacheable: true,
       ttlMs: TTL_1H,
     });
-    return formatToolResult(data.investors ?? [], [url]);
+    return formatToolResult(data.investors ?? [], [url], warnings);
   },
 });

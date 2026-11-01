@@ -1,12 +1,17 @@
 export interface ToolResult {
   data: unknown;
   sourceUrls?: string[];
+  /** Completeness caveats the LLM must see (e.g. truncated pagination). */
+  warnings?: string[];
 }
 
-export function formatToolResult(data: unknown, sourceUrls?: string[]): string {
+export function formatToolResult(data: unknown, sourceUrls?: string[], warnings?: string[]): string {
   const result: ToolResult = { data };
   if (sourceUrls?.length) {
     result.sourceUrls = sourceUrls;
+  }
+  if (warnings?.length) {
+    result.warnings = warnings;
   }
   return JSON.stringify(result);
 }

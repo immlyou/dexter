@@ -36,6 +36,14 @@ function assertApiUrl(raw: string, label: string): string {
 export interface ApiResponse {
   data: Record<string, unknown>;
   url: string;
+  /** Set when the result is known to be incomplete (e.g. pagination stopped early). */
+  warnings?: string[];
+}
+
+/** Warning attached to every tool result built from a truncated api.get response. */
+export function truncationWarning(label: string): string {
+  return `INCOMPLETE DATA: pagination for ${label} stopped early (page limit reached); `
+    + 'later records are missing. Do not treat this result as complete — narrow the query (e.g. a shorter date range or lower limit) if completeness matters.';
 }
 
 /**
@@ -216,7 +224,9 @@ export const api = {
       writeCache(endpoint, params, data, url.toString());
     }
 
-    return { data, url: url.toString() };
+    return complete
+      ? { data, url: url.toString() }
+      : { data, url: url.toString(), warnings: [truncationWarning(label)] };
   },
 
   async post(
