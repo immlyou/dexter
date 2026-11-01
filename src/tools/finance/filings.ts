@@ -1,12 +1,14 @@
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { callApi } from './api.js';
+import { api } from './api.js';
 import { formatToolResult } from '../types.js';
+import { TTL_24H } from './utils.js';
 
 // Types for filing item metadata
 export interface FilingItemType {
-  name: string;  // e.g., "Item-1", "Part-1,Item-2"
-  title: string; // e.g., "Business", "MD&A"
+  name: string;        // e.g., "Item-1", "Part-1,Item-2"
+  title: string;       // e.g., "Business", "MD&A"
+  description: string; // e.g., "Detailed overview of the company's operations..."
 }
 
 export interface FilingItemTypes {
@@ -14,16 +16,24 @@ export interface FilingItemTypes {
   '10-Q': FilingItemType[];
 }
 
+let cachedItemTypes: FilingItemTypes | null = null;
+
 /**
  * Fetches canonical item type names from the API.
  * Used to provide the inner LLM with exact item names for selective retrieval.
  */
 export async function getFilingItemTypes(): Promise<FilingItemTypes> {
+  if (cachedItemTypes) {
+    return cachedItemTypes;
+  }
+
   const response = await fetch('https://api.financialdatasets.ai/filings/items/types/');
   if (!response.ok) {
-    throw new Error(`Failed to fetch filing item types: ${response.status}`);
+    throw new Error(`[Financial Datasets API] Failed to fetch filing item types: ${response.status}`);
   }
-  return response.json();
+  const itemTypes = (await response.json()) as FilingItemTypes;
+  cachedItemTypes = itemTypes;
+  return itemTypes;
 }
 
 const FilingsInputSchema = z.object({
@@ -31,10 +41,10 @@ const FilingsInputSchema = z.object({
     .string()
     .describe("The stock ticker symbol to fetch filings for. For example, 'AAPL' for Apple."),
   filing_type: z
-    .enum(['10-K', '10-Q', '8-K'])
+    .array(z.enum(['10-K', '10-Q', '8-K']))
     .optional()
     .describe(
-      "REQUIRED when searching for a specific filing type. Use '10-K' for annual reports, '10-Q' for quarterly reports, or '8-K' for current reports. If omitted, returns most recent filings of ANY type."
+      "Optional list of filing types to filter by. Use one or more of '10-K', '10-Q', or '8-K'. If omitted, returns most recent filings of ANY type."
     ),
   limit: z
     .number()
@@ -49,12 +59,12 @@ export const getFilings = new DynamicStructuredTool({
   description: `Retrieves metadata for SEC filings for a company. Returns accession numbers, filing types, and document URLs. This tool ONLY returns metadata - it does NOT return the actual text content from filings. To retrieve text content, use the specific filing items tools: get_10K_filing_items, get_10Q_filing_items, or get_8K_filing_items.`,
   schema: FilingsInputSchema,
   func: async (input) => {
-    const params: Record<string, string | number | undefined> = {
+    const params: Record<string, string | number | string[] | undefined> = {
       ticker: input.ticker,
       limit: input.limit,
       filing_type: input.filing_type,
     };
-    const { data, url } = await callApi('/filings/', params);
+    const { data, url } = await api.get('/filings/', params);
     return formatToolResult(data.filings || [], [url]);
   },
 });
@@ -86,7 +96,7 @@ export const get10KFilingItems = new DynamicStructuredTool({
       item: input.items, // API expects 'item' not 'items'
     };
     // SEC filings are legally immutable once filed
-    const { data, url } = await callApi('/filings/items/', params, { cacheable: true });
+    const { data, url } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(data, [url]);
   },
 });
@@ -118,7 +128,7 @@ export const get10QFilingItems = new DynamicStructuredTool({
       item: input.items, // API expects 'item' not 'items'
     };
     // SEC filings are legally immutable once filed
-    const { data, url } = await callApi('/filings/items/', params, { cacheable: true });
+    const { data, url } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(data, [url]);
   },
 });
@@ -143,7 +153,7 @@ export const get8KFilingItems = new DynamicStructuredTool({
       accession_number: input.accession_number,
     };
     // SEC filings are legally immutable once filed
-    const { data, url } = await callApi('/filings/items/', params, { cacheable: true });
+    const { data, url } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
     return formatToolResult(data, [url]);
   },
 });

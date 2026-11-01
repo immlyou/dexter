@@ -1,30 +1,16 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { config } from 'dotenv';
+import { getProviderById } from '@/providers';
 
 // Load .env on module import
 config({ quiet: true });
 
-type ProviderConfig = {
-  displayName: string;
-  apiKeyEnvVar?: string;
-};
-
-// Single source of truth for all provider configuration
-const PROVIDERS: Record<string, ProviderConfig> = {
-  openai: { displayName: 'OpenAI', apiKeyEnvVar: 'OPENAI_API_KEY' },
-  anthropic: { displayName: 'Anthropic', apiKeyEnvVar: 'ANTHROPIC_API_KEY' },
-  google: { displayName: 'Google', apiKeyEnvVar: 'GOOGLE_API_KEY' },
-  moonshot: { displayName: 'Moonshot', apiKeyEnvVar: 'MOONSHOT_API_KEY' },
-  openrouter: { displayName: 'OpenRouter', apiKeyEnvVar: 'OPENROUTER_API_KEY' },
-  ollama: { displayName: 'Ollama' },
-};
-
 export function getApiKeyNameForProvider(providerId: string): string | undefined {
-  return PROVIDERS[providerId]?.apiKeyEnvVar;
+  return getProviderById(providerId)?.apiKeyEnvVar;
 }
 
 export function getProviderDisplayName(providerId: string): string {
-  return PROVIDERS[providerId]?.displayName || providerId;
+  return getProviderById(providerId)?.displayName ?? providerId;
 }
 
 export function checkApiKeyExistsForProvider(providerId: string): boolean {
@@ -112,4 +98,29 @@ export function saveApiKeyForProvider(providerId: string, apiKey: string): boole
   const apiKeyName = getApiKeyNameForProvider(providerId);
   if (!apiKeyName) return false;
   return saveApiKeyToEnv(apiKeyName, apiKey);
+}
+
+export type SearchProviderId = 'exa' | 'perplexity' | 'tavily' | 'langsearch';
+
+export const SEARCH_PROVIDERS: Record<SearchProviderId, { displayName: string; apiKeyEnvVar: string }> = {
+  exa: { displayName: 'Exa', apiKeyEnvVar: 'EXASEARCH_API_KEY' },
+  perplexity: { displayName: 'Perplexity', apiKeyEnvVar: 'PERPLEXITY_API_KEY' },
+  tavily: { displayName: 'Tavily', apiKeyEnvVar: 'TAVILY_API_KEY' },
+  langsearch: { displayName: 'LangSearch', apiKeyEnvVar: 'LANGSEARCH_API_KEY' },
+};
+
+export function getSearchProviderDisplayName(providerId: SearchProviderId): string {
+  return SEARCH_PROVIDERS[providerId].displayName;
+}
+
+export function getApiKeyNameForSearchProvider(providerId: SearchProviderId): string {
+  return SEARCH_PROVIDERS[providerId].apiKeyEnvVar;
+}
+
+export function checkApiKeyForSearchProvider(providerId: SearchProviderId): boolean {
+  return checkApiKeyExists(SEARCH_PROVIDERS[providerId].apiKeyEnvVar);
+}
+
+export function saveApiKeyForSearchProvider(providerId: SearchProviderId, apiKey: string): boolean {
+  return saveApiKeyToEnv(SEARCH_PROVIDERS[providerId].apiKeyEnvVar, apiKey);
 }

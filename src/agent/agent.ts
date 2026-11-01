@@ -1,59 +1,129 @@
-import { AIMessage } from '@langchain/core/messages';
+import { AIMessage, AIMessageChunk, SystemMessage, HumanMessage, ToolMessage, type BaseMessage } from '@langchain/core/messages';
 import type { StructuredToolInterface } from '@langchain/core/tools';
-import { callLlm } from '../model/llm.js';
-import { Scratchpad, type ToolContext } from './scratchpad.js';
+import { callLlmWithMessages, streamLlmWithMessages } from '../model/llm.js';
 import { getToolRegistry } from '../tools/registry.js';
-import { buildSystemPrompt, buildIterationPrompt, buildFinalAnswerPrompt } from '../agent/prompts.js';
+import { buildSystemPrompt, loadSoulDocument, loadRulesDocument } from './prompts.js';
 import { extractTextContent, hasToolCalls } from '../utils/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
-import { getToolDescription } from '../utils/tool-description.js';
-import { estimateTokens, CONTEXT_THRESHOLD, KEEP_TOOL_USES } from '../utils/tokens.js';
-import { createProgressChannel } from '../utils/progress-channel.js';
-import type { AgentConfig, AgentEvent, ToolStartEvent, ToolProgressEvent, ToolEndEvent, ToolErrorEvent, ToolLimitEvent, ContextClearedEvent, TokenUsage } from '../agent/types.js';
-import { TokenCounter } from './token-counter.js';
+import { estimateTokens, getAutoCompactThreshold, KEEP_TOOL_USES } from '../utils/tokens.js';
+import { exceedsSizeCap, persistLargeResult, buildPersistedContent } from '../utils/tool-result-storage.js';
+import { enforceResultBudget } from '../utils/tool-result-budget.js';
+import { formatUserFacingError, isContextOverflowError } from '../utils/errors.js';
+import type { AgentConfig, AgentEvent, CompactionEvent, ContextClearedEvent, MicrocompactEvent, QueueDrainEvent, StreamMode, StreamProgressEvent, TokenUsage } from '../agent/types.js';
+import type { MessageQueue } from '../utils/message-queue.js';
+import { compactContext, MAX_CONSECUTIVE_COMPACTION_FAILURES, MIN_TOOL_RESULTS_FOR_COMPACTION } from './compact.js';
+import { microcompactMessages } from './microcompact.js';
+import { createRunContext, type RunContext } from './run-context.js';
+import { AgentToolExecutor } from './tool-executor.js';
+import { MemoryManager } from '../memory/index.js';
+import { runMemoryFlush, shouldRunMemoryFlush } from '../memory/flush.js';
+import { resolveProvider } from '../providers.js';
 
 
+const DEFAULT_MODEL = 'gpt-5.6-sol';
 const DEFAULT_MAX_ITERATIONS = 10;
+const MAX_OVERFLOW_RETRIES = 2;
+const OVERFLOW_KEEP_ROUNDS = 3;
+
+/** Tools that require an interactive user and are only bound on the CLI channel. */
+const CLI_ONLY_TOOLS = new Set<string>(['ask_user_question', 'bash']);
 
 /**
  * The core agent class that handles the agent loop and tool execution.
+ *
+ * Architecture:
+ * - Growing message array with full reasoning continuity
+ * - Concurrent execution for read-only tools
+ * - Streaming LLM responses with fallback to blocking
+ * - Per-turn microcompact + threshold-based full compaction
  */
 export class Agent {
   private readonly model: string;
-  private readonly modelProvider: string;
   private readonly maxIterations: number;
   private readonly tools: StructuredToolInterface[];
   private readonly toolMap: Map<string, StructuredToolInterface>;
+  private readonly toolExecutor: AgentToolExecutor;
   private readonly systemPrompt: string;
   private readonly signal?: AbortSignal;
+  private readonly memoryEnabled: boolean;
+  private readonly messageQueue?: MessageQueue;
   private readonly disposers: Array<() => Promise<void>>;
+  private compactionFailures: number = 0;
 
   private constructor(
     config: AgentConfig,
     tools: StructuredToolInterface[],
     systemPrompt: string,
-    disposers: Array<() => Promise<void>> = []
+    concurrencyMap: Map<string, boolean>,
+    disposers: Array<() => Promise<void>> = [],
   ) {
-    this.model = config.model ?? 'claude-sonnet-5-5';
-    this.modelProvider = config.modelProvider ?? 'anthropic';
+    this.model = config.model ?? DEFAULT_MODEL;
     this.maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     this.tools = tools;
     this.toolMap = new Map(tools.map(t => [t.name, t]));
+    this.toolExecutor = new AgentToolExecutor(
+      this.toolMap,
+      concurrencyMap,
+      config.signal,
+      config.requestToolApproval,
+      config.sessionApprovedTools,
+      undefined,
+      config.requestUserInput,
+    );
     this.systemPrompt = systemPrompt;
     this.signal = config.signal;
+    this.memoryEnabled = config.memoryEnabled ?? true;
+    this.messageQueue = config.messageQueue;
     this.disposers = disposers;
   }
 
-  /**
-   * Create a new Agent instance with tools.
-   */
-  static create(config: AgentConfig = {}): Agent {
-    const model = config.model ?? 'claude-sonnet-5-5';
-    const registry = getToolRegistry(model);
-    const tools = registry.map((t) => t.tool);
-    const disposers = registry.flatMap((t) => (t.dispose ? [t.dispose] : []));
-    const systemPrompt = buildSystemPrompt(model);
-    return new Agent(config, tools, systemPrompt, disposers);
+  static async create(config: AgentConfig = {}): Promise<Agent> {
+    const model = config.model ?? DEFAULT_MODEL;
+    let registry = getToolRegistry(model);
+    registry = config.toolAllowlist
+      ? registry.filter(t => config.toolAllowlist!.includes(t.name))
+      : registry;
+    // CLI-only tools (interactive prompts) are dropped on non-CLI channels
+    // (WhatsApp/gateway) and in headless runs, where there is no user at a keyboard.
+    const isCli = !config.channel || config.channel === 'cli';
+    if (!isCli) {
+      registry = registry.filter(t => !CLI_ONLY_TOOLS.has(t.name));
+    }
+    const tools = registry.map(t => t.tool);
+    const concurrencyMap = new Map(registry.map(t => [t.name, t.concurrencySafe]));
+    // Per-run resources (e.g. the browser context) are released when run() ends.
+    const disposers = registry.flatMap(t => (t.dispose ? [t.dispose] : []));
+
+    let systemPrompt: string;
+    if (config.systemPromptOverride) {
+      // Self-contained worker prompt: skip soul, rules, and memory context.
+      systemPrompt = config.systemPromptOverride;
+    } else {
+      const soulContent = await loadSoulDocument();
+      const rulesContent = await loadRulesDocument();
+      let memoryFiles: string[] = [];
+      let memoryContext: string | null = null;
+
+      if (config.memoryEnabled !== false) {
+        const memoryManager = await MemoryManager.get();
+        memoryFiles = await memoryManager.listFiles();
+        const session = await memoryManager.loadSessionContext();
+        if (session.text.trim()) {
+          memoryContext = session.text;
+        }
+      }
+
+      systemPrompt = buildSystemPrompt(
+        model,
+        soulContent,
+        config.channel,
+        config.groupContext,
+        memoryFiles,
+        memoryContext,
+        rulesContent,
+      );
+    }
+    return new Agent(config, tools, systemPrompt, concurrencyMap, disposers);
   }
 
   /**
@@ -69,316 +139,583 @@ export class Agent {
   }
 
   /**
-   * Run the agent and yield events for real-time UI updates.
-   * Anthropic-style context management: full tool results during iteration,
-   * with threshold-based clearing of oldest results when context exceeds limit.
+   * Run the agent with streaming, concurrent tools, and microcompact.
    */
   private async *runLoop(query: string, inMemoryHistory?: InMemoryChatHistory): AsyncGenerator<AgentEvent> {
     const startTime = Date.now();
-    const tokenCounter = new TokenCounter();
-    
+
     if (this.tools.length === 0) {
       yield { type: 'done', answer: 'No tools available. Please check your API key configuration.', toolCalls: [], iterations: 0, totalTime: Date.now() - startTime };
       return;
     }
 
-    // Create scratchpad for this query - single source of truth for all work done
-    const scratchpad = new Scratchpad(query);
-    
-    // Build initial prompt with conversation history context
-    let currentPrompt = this.buildInitialPrompt(query, inMemoryHistory);
-    
-    let iteration = 0;
+    const ctx = createRunContext(query);
+    const memoryFlushState = { alreadyFlushed: false };
+
+    // Build initial message array
+    const historyMessages = inMemoryHistory?.getRecentTurnsAsMessages() ?? [];
+    let messages: BaseMessage[] = [
+      new SystemMessage(this.systemPrompt),
+      ...historyMessages,
+      new HumanMessage(query),
+    ];
 
     // Main agent loop
-    while (iteration < this.maxIterations) {
-      iteration++;
+    let overflowRetries = 0;
+    while (ctx.iteration < this.maxIterations) {
+      ctx.iteration++;
 
-      const { response, usage } = await this.callModel(currentPrompt);
-      tokenCounter.add(usage);
-      const responseText = typeof response === 'string' ? response : extractTextContent(response);
+      // Microcompact: per-turn lightweight trimming before LLM call
+      const mcResult = microcompactMessages(messages);
+      if (mcResult.trigger) {
+        messages = mcResult.messages;
+        yield { type: 'microcompact', cleared: mcResult.cleared, tokensSaved: mcResult.estimatedTokensSaved } as MicrocompactEvent;
+      }
 
-      // Emit thinking if there are also tool calls (skip whitespace-only responses)
-      if (responseText?.trim() && typeof response !== 'string' && hasToolCalls(response)) {
+      // Strip old reasoning from AIMessages (keep last 2 for continuity)
+      this.stripOldThinking(messages, 2);
+
+      let response: AIMessage;
+      let usage: TokenUsage | undefined;
+
+      // Call LLM with streaming (falls back to blocking on error)
+      while (true) {
+        try {
+          const result = yield* this.callModelWithStreaming(messages);
+          response = result.response;
+          usage = result.usage;
+          overflowRetries = 0;
+          break;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+
+          if (isContextOverflowError(errorMessage) && overflowRetries < MAX_OVERFLOW_RETRIES) {
+            overflowRetries++;
+            const removed = this.truncateMessages(messages, OVERFLOW_KEEP_ROUNDS);
+            if (removed > 0) {
+              yield { type: 'context_cleared', clearedCount: removed, keptCount: OVERFLOW_KEEP_ROUNDS };
+              continue;
+            }
+          }
+
+          const totalTime = Date.now() - ctx.startTime;
+          const provider = resolveProvider(this.model).displayName;
+          yield {
+            type: 'done',
+            answer: `Error: ${formatUserFacingError(errorMessage, provider)}`,
+            toolCalls: ctx.scratchpad.getToolCallRecords(),
+            iterations: ctx.iteration,
+            totalTime,
+            tokenUsage: ctx.tokenCounter.getUsage(),
+            tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
+          };
+          return;
+        }
+      }
+
+      ctx.tokenCounter.add(usage);
+      if (usage?.inputTokens) {
+        ctx.lastApiInputTokens = usage.inputTokens;
+      }
+
+      const responseText = extractTextContent(response);
+
+      // Emit thinking if there are also tool calls
+      if (responseText?.trim() && hasToolCalls(response)) {
         const trimmedText = responseText.trim();
-        scratchpad.addThinking(trimmedText);
+        ctx.scratchpad.addThinking(trimmedText);
         yield { type: 'thinking', message: trimmedText };
       }
 
-      // No tool calls = ready to generate final answer
-      if (typeof response === 'string' || !hasToolCalls(response)) {
-        // If no tools were called at all, just use the direct response
-        // This handles greetings, clarifying questions, etc.
-        if (!scratchpad.hasToolResults() && responseText) {
-          yield { type: 'answer_start' };
-          const totalTime = Date.now() - startTime;
-          yield { type: 'done', answer: responseText, toolCalls: [], iterations: iteration, totalTime, tokenUsage: tokenCounter.getUsage(), tokensPerSecond: tokenCounter.getTokensPerSecond(totalTime) };
-          return;
-        }
-
-        // Generate final answer with full context from scratchpad
-        const fullContext = this.buildFullContextForAnswer(query, scratchpad);
-        const finalPrompt = buildFinalAnswerPrompt(query, fullContext);
-        
-        yield { type: 'answer_start' };
-        const { response: finalResponse, usage: finalUsage } = await this.callModel(finalPrompt, false);
-        tokenCounter.add(finalUsage);
-        const answer = typeof finalResponse === 'string' 
-          ? finalResponse 
-          : extractTextContent(finalResponse);
-
-        const totalTime = Date.now() - startTime;
-        yield { type: 'done', answer, toolCalls: scratchpad.getToolCallRecords(), iterations: iteration, totalTime, tokenUsage: tokenCounter.getUsage(), tokensPerSecond: tokenCounter.getTokensPerSecond(totalTime) };
+      // No tool calls = final answer
+      if (!hasToolCalls(response)) {
+        yield* this.handleDirectResponse(responseText ?? '', ctx);
         return;
       }
 
-      // Execute tools and add results to scratchpad (response is AIMessage here)
-      const generator = this.executeToolCalls(response, query, scratchpad);
-      let result = await generator.next();
+      // Push AIMessage to conversation history
+      messages.push(response);
 
-      // Yield tool events
-      while (!result.done) {
-        yield result.value;
-        result = await generator.next();
-      }
-      
-      // Anthropic-style context management: get full tool results
-      let fullToolResults = scratchpad.getToolResults();
-      
-      // Check context threshold and clear oldest tool results if needed
-      const estimatedContextTokens = estimateTokens(this.systemPrompt + query + fullToolResults);
-      if (estimatedContextTokens > CONTEXT_THRESHOLD) {
-        const clearedCount = scratchpad.clearOldestToolResults(KEEP_TOOL_USES);
-        if (clearedCount > 0) {
-          yield { type: 'context_cleared', clearedCount, keptCount: KEEP_TOOL_USES } as ContextClearedEvent;
-          // Re-fetch after clearing
-          fullToolResults = scratchpad.getToolResults();
+      // Execute tools concurrently where safe, collect ToolMessages by ID
+      let { toolMessages, denied } = yield* this.executeToolsAndCollectMessages(response, ctx);
+
+      // Cap large results (persist to disk, inject preview)
+      toolMessages = toolMessages.map(tm => {
+        const content = typeof tm.content === 'string' ? tm.content : JSON.stringify(tm.content);
+        if (exceedsSizeCap(content)) {
+          const { preview, filePath } = persistLargeResult(tm.name ?? 'unknown', tm.tool_call_id, content);
+          return new ToolMessage({
+            content: buildPersistedContent(filePath, preview, content.length),
+            tool_call_id: tm.tool_call_id,
+            name: tm.name,
+          });
         }
+        return tm;
+      });
+
+      // Enforce per-turn total budget
+      toolMessages = enforceResultBudget(toolMessages);
+
+      messages.push(...toolMessages);
+
+      if (denied) {
+        const totalTime = Date.now() - ctx.startTime;
+        yield {
+          type: 'done',
+          answer: '',
+          toolCalls: ctx.scratchpad.getToolCallRecords(),
+          iterations: ctx.iteration,
+          totalTime,
+          tokenUsage: ctx.tokenCounter.getUsage(),
+          tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
+        };
+        return;
       }
-      
-      // Build iteration prompt with full tool results (Anthropic-style)
-      currentPrompt = buildIterationPrompt(
-        query, 
-        fullToolResults,
-        scratchpad.formatToolUsageForPrompt()
-      );
+
+      // Context threshold management (may compact the message array)
+      const messageState = { messages };
+      yield* this.manageContextThreshold(ctx, query, memoryFlushState, messageState);
+      messages = messageState.messages;
+
+      // Inject tool usage warning if approaching limits
+      const toolUsageWarning = ctx.scratchpad.formatToolUsageForPrompt();
+      if (toolUsageWarning) {
+        messages.push(new HumanMessage(toolUsageWarning));
+      }
+
+      // Drain queued messages: user may have sent follow-ups while agent was working
+      const drainResult = this.drainQueue();
+      if (drainResult) {
+        messages.push(new HumanMessage(drainResult.text));
+        yield { type: 'queue_drain', messageCount: drainResult.count, mergedText: drainResult.text, texts: drainResult.texts } as QueueDrainEvent;
+      }
     }
 
-    // Max iterations reached - still generate proper final answer
-    const fullContext = this.buildFullContextForAnswer(query, scratchpad);
-    const finalPrompt = buildFinalAnswerPrompt(query, fullContext);
-    
-    yield { type: 'answer_start' };
-    const { response: finalResponse, usage: finalUsage } = await this.callModel(finalPrompt, false);
-    tokenCounter.add(finalUsage);
-    const answer = typeof finalResponse === 'string' 
-      ? finalResponse 
-      : extractTextContent(finalResponse);
-
-    const totalTime = Date.now() - startTime;
+    // Max iterations reached
+    const totalTime = Date.now() - ctx.startTime;
     yield {
       type: 'done',
-      answer: answer || `Reached maximum iterations (${this.maxIterations}).`,
-      toolCalls: scratchpad.getToolCallRecords(),
-      iterations: iteration,
+      answer: `Reached maximum iterations (${this.maxIterations}). I was unable to complete the research in the allotted steps.`,
+      toolCalls: ctx.scratchpad.getToolCallRecords(),
+      iterations: ctx.iteration,
       totalTime,
-      tokenUsage: tokenCounter.getUsage(),
-      tokensPerSecond: tokenCounter.getTokensPerSecond(totalTime)
+      tokenUsage: ctx.tokenCounter.getUsage(),
+      tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
     };
   }
 
+  // ---------------------------------------------------------------------------
+  // LLM call methods
+  // ---------------------------------------------------------------------------
+
   /**
-   * Call the LLM with the current prompt.
-   * @param prompt - The prompt to send to the LLM
-   * @param useTools - Whether to bind tools (default: true). When false, returns string directly.
+   * Call LLM with streaming, falling back to blocking invoke on error.
+   * Yields StreamProgressEvents as chunks arrive; returns the final accumulated message.
    */
-  private async callModel(prompt: string, useTools: boolean = true): Promise<{ response: AIMessage | string; usage?: TokenUsage }> {
-    const result = await callLlm(prompt, {
+  private async *callModelWithStreaming(
+    messages: BaseMessage[],
+  ): AsyncGenerator<StreamProgressEvent, { response: AIMessage; usage?: TokenUsage }> {
+    try {
+      return yield* this.streamAndAccumulate(messages);
+    } catch {
+      // Fallback to blocking invoke (handles providers without streaming support)
+      return await this.callModelWithMessages(messages);
+    }
+  }
+
+  /**
+   * Stream the LLM response, yielding per-chunk progress events and finally
+   * returning the accumulated AIMessage. Stream-mode lifecycle:
+   * 'requesting' before the first chunk, then 'thinking'/'responding'/'tool-input'
+   * derived from chunk content shape, then 'tool-use' after stream end if there
+   * are tool calls awaiting execution.
+   */
+  private async *streamAndAccumulate(
+    messages: BaseMessage[],
+  ): AsyncGenerator<StreamProgressEvent, { response: AIMessage; usage?: TokenUsage }> {
+    yield { type: 'stream_progress', charDelta: 0, mode: 'requesting' };
+
+    let accumulated: AIMessageChunk | null = null;
+
+    for await (const chunk of streamLlmWithMessages(messages, {
       model: this.model,
-      systemPrompt: this.systemPrompt,
-      tools: useTools ? this.tools : undefined,
+      tools: this.tools,
+      signal: this.signal,
+    })) {
+      accumulated = accumulated ? accumulated.concat(chunk) : chunk;
+      const { charDelta, mode } = inspectChunkContent(chunk);
+      if (charDelta > 0 || mode !== 'responding') {
+        yield { type: 'stream_progress', charDelta, mode };
+      }
+    }
+
+    if (!accumulated) {
+      throw new Error('Stream produced no chunks');
+    }
+
+    const response = new AIMessage({
+      content: accumulated.content,
+      tool_calls: accumulated.tool_calls,
+      invalid_tool_calls: accumulated.invalid_tool_calls,
+      usage_metadata: accumulated.usage_metadata,
+      response_metadata: accumulated.response_metadata,
+    });
+
+    if (response.tool_calls && response.tool_calls.length > 0) {
+      yield { type: 'stream_progress', charDelta: 0, mode: 'tool-use' };
+    }
+
+    const usage = accumulated.usage_metadata
+      ? {
+          inputTokens: accumulated.usage_metadata.input_tokens ?? 0,
+          outputTokens: accumulated.usage_metadata.output_tokens ?? 0,
+          totalTokens: accumulated.usage_metadata.total_tokens ?? 0,
+        }
+      : undefined;
+
+    return { response, usage };
+  }
+
+  /**
+   * Blocking LLM call (fallback when streaming fails).
+   */
+  private async callModelWithMessages(
+    messages: BaseMessage[],
+  ): Promise<{ response: AIMessage; usage?: TokenUsage }> {
+    const result = await callLlmWithMessages(messages, {
+      model: this.model,
+      tools: this.tools,
       signal: this.signal,
     });
-    return { response: result.response, usage: result.usage };
+    return { response: result.response as AIMessage, usage: result.usage };
   }
 
+  // ---------------------------------------------------------------------------
+  // Tool execution
+  // ---------------------------------------------------------------------------
+
   /**
-   * Execute all tool calls from an LLM response and add results to scratchpad.
-   * Deduplicates skill calls - each skill can only be executed once per query.
-   * Includes graceful exit mechanism - checks tool limits before executing.
+   * Execute tools and collect ToolMessages mapped by tool_call_id.
+   * Supports concurrent execution — events may arrive out of order.
    */
-  private async *executeToolCalls(
+  private async *executeToolsAndCollectMessages(
     response: AIMessage,
-    query: string,
-    scratchpad: Scratchpad
-  ): AsyncGenerator<ToolStartEvent | ToolProgressEvent | ToolEndEvent | ToolErrorEvent | ToolLimitEvent, void> {
-    for (const toolCall of response.tool_calls!) {
-      const toolName = toolCall.name;
-      const toolArgs = toolCall.args as Record<string, unknown>;
+    ctx: RunContext,
+  ): AsyncGenerator<AgentEvent, { toolMessages: ToolMessage[]; denied: boolean }> {
+    const toolMessageMap = new Map<string, ToolMessage>();
+    let denied = false;
+    const toolCalls = response.tool_calls!;
 
-      // Deduplicate skill calls - each skill can only run once per query
-      if (toolName === 'skill') {
-        const skillName = toolArgs.skill as string;
-        if (scratchpad.hasExecutedSkill(skillName)) continue;
+    for await (const event of this.toolExecutor.executeAll(response, ctx)) {
+      yield event;
+
+      if (event.type === 'tool_end' && event.toolCallId) {
+        toolMessageMap.set(event.toolCallId, new ToolMessage({
+          content: event.result,
+          tool_call_id: event.toolCallId,
+          name: event.tool,
+        }));
+      } else if (event.type === 'tool_error' && event.toolCallId) {
+        toolMessageMap.set(event.toolCallId, new ToolMessage({
+          content: `Error: ${event.error}`,
+          tool_call_id: event.toolCallId,
+          name: event.tool,
+        }));
+      } else if (event.type === 'tool_denied' && event.toolCallId) {
+        toolMessageMap.set(event.toolCallId, new ToolMessage({
+          content: 'Tool execution denied by user.',
+          tool_call_id: event.toolCallId,
+          name: event.tool,
+        }));
+        denied = true;
       }
+    }
 
-      const generator = this.executeToolCall(toolName, toolArgs, query, scratchpad);
-      let result = await generator.next();
+    // Produce ToolMessages in ORIGINAL tool_calls order
+    const toolMessages: ToolMessage[] = toolCalls.map(tc =>
+      toolMessageMap.get(tc.id!) ?? new ToolMessage({
+        content: 'Skipped (already executed).',
+        tool_call_id: tc.id!,
+        name: tc.name,
+      }),
+    );
 
-      while (!result.done) {
-        yield result.value;
-        result = await generator.next();
+    return { toolMessages, denied };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Message queue
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Drain all queued messages, merge into a single text block.
+   * Returns null if the queue is empty or not configured.
+   */
+  private drainQueue(): { text: string; count: number; texts: string[] } | null {
+    if (!this.messageQueue || this.messageQueue.isEmpty()) {
+      return null;
+    }
+    const messages = this.messageQueue.dequeueAll();
+    if (messages.length === 0) return null;
+    const texts = messages.map(m => m.text);
+    return {
+      text: texts.join('\n\n'),
+      count: messages.length,
+      texts,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Response handling
+  // ---------------------------------------------------------------------------
+
+  private async *handleDirectResponse(
+    responseText: string,
+    ctx: RunContext,
+  ): AsyncGenerator<AgentEvent, void> {
+    const totalTime = Date.now() - ctx.startTime;
+    yield {
+      type: 'done',
+      answer: responseText,
+      toolCalls: ctx.scratchpad.getToolCallRecords(),
+      iterations: ctx.iteration,
+      totalTime,
+      tokenUsage: ctx.tokenCounter.getUsage(),
+      tokensPerSecond: ctx.tokenCounter.getTokensPerSecond(totalTime),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Message array management
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Remove oldest AI+Tool message rounds, keeping SystemMessage, history,
+   * HumanMessage, and the most recent N rounds.
+   */
+  /**
+   * Strip text content from old AIMessages, keeping only the most recent N.
+   * Preserves tool_calls structure (required for ToolMessage pairing).
+   */
+  private stripOldThinking(messages: BaseMessage[], keepLast: number): void {
+    // Collect indices of AIMessages with text content
+    const aiIndices: number[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i] instanceof AIMessage) {
+        aiIndices.push(i);
+      }
+    }
+
+    // Only strip if we have more than keepLast AIMessages
+    const toStrip = aiIndices.slice(0, -keepLast);
+    for (const idx of toStrip) {
+      const msg = messages[idx] as AIMessage;
+      // Only strip if it has tool_calls (reasoning before tools — safe to clear)
+      if (msg.tool_calls && msg.tool_calls.length > 0 && msg.content) {
+        messages[idx] = new AIMessage({
+          content: '',
+          tool_calls: msg.tool_calls,
+          invalid_tool_calls: msg.invalid_tool_calls,
+          usage_metadata: msg.usage_metadata,
+          response_metadata: msg.response_metadata,
+        });
       }
     }
   }
 
-  /**
-   * Execute a single tool call and add result to scratchpad.
-   * Yields start/end/error events for UI updates.
-   * Includes soft limit warnings to guide the LLM.
-   */
-  private async *executeToolCall(
-    toolName: string,
-    toolArgs: Record<string, unknown>,
-    query: string,
-    scratchpad: Scratchpad
-  ): AsyncGenerator<ToolStartEvent | ToolProgressEvent | ToolEndEvent | ToolErrorEvent | ToolLimitEvent, void> {
-    // Extract query string from tool args for similarity detection
-    const toolQuery = this.extractQueryFromArgs(toolArgs);
+  private truncateMessages(messages: BaseMessage[], keepRounds: number): number {
+    let roundStartIndex = -1;
+    for (let i = 0; i < messages.length; i++) {
+      if (messages[i] instanceof AIMessage) {
+        roundStartIndex = i;
+        break;
+      }
+    }
+    if (roundStartIndex === -1) return 0;
 
-    // Check tool limits - yields warning if approaching/over limits
-    const limitCheck = scratchpad.canCallTool(toolName, toolQuery);
-    
-    if (limitCheck.warning) {
-      yield { 
-        type: 'tool_limit', 
-        tool: toolName, 
-        warning: limitCheck.warning, 
-        blocked: false 
+    const rounds: { start: number; end: number }[] = [];
+    let i = roundStartIndex;
+    while (i < messages.length) {
+      if (messages[i] instanceof AIMessage) {
+        const start = i;
+        i++;
+        while (i < messages.length && (messages[i] instanceof ToolMessage || messages[i] instanceof HumanMessage)) {
+          i++;
+        }
+        rounds.push({ start, end: i });
+      } else {
+        i++;
+      }
+    }
+
+    const roundsToRemove = Math.max(0, rounds.length - keepRounds);
+    if (roundsToRemove === 0) return 0;
+
+    const removeEnd = rounds[roundsToRemove - 1].end;
+    const removed = removeEnd - roundStartIndex;
+    messages.splice(roundStartIndex, removed);
+    return removed;
+  }
+
+  /**
+   * Replace message array with compacted version after LLM summarization.
+   */
+  private compactMessages(messages: BaseMessage[], summary: string, query: string): BaseMessage[] {
+    return [
+      messages[0], // SystemMessage
+      new HumanMessage(`${query}\n\n${summary}`),
+    ];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Context threshold management
+  // ---------------------------------------------------------------------------
+
+  private async *manageContextThreshold(
+    ctx: RunContext,
+    query: string,
+    memoryFlushState: { alreadyFlushed: boolean },
+    messageState: { messages: BaseMessage[] },
+  ): AsyncGenerator<ContextClearedEvent | CompactionEvent | AgentEvent, void> {
+    const estimatedContextTokens = ctx.lastApiInputTokens > 0
+      ? ctx.lastApiInputTokens
+      : estimateTokens(messageState.messages.map(m =>
+          typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+        ).join('\n'));
+    const threshold = getAutoCompactThreshold(this.model);
+
+    if (estimatedContextTokens <= threshold) {
+      return;
+    }
+
+    // Step 1: Memory flush
+    const fullToolResults = ctx.scratchpad.getToolResults();
+    if (
+      this.memoryEnabled &&
+      shouldRunMemoryFlush({
+        estimatedContextTokens,
+        threshold,
+        alreadyFlushed: memoryFlushState.alreadyFlushed,
+      })
+    ) {
+      yield { type: 'memory_flush', phase: 'start' };
+      const flushResult = await runMemoryFlush({
+        model: this.model,
+        systemPrompt: this.systemPrompt,
+        query,
+        toolResults: fullToolResults,
+        signal: this.signal,
+      }).catch(() => ({ flushed: false, written: false as const }));
+      memoryFlushState.alreadyFlushed = flushResult.flushed;
+      yield {
+        type: 'memory_flush',
+        phase: 'end',
+        filesWritten: flushResult.written ? [`${new Date().toISOString().slice(0, 10)}.md`] : [],
       };
     }
 
-    yield { type: 'tool_start', tool: toolName, args: toolArgs };
+    // Step 2: Compaction
+    if (
+      this.compactionFailures < MAX_CONSECUTIVE_COMPACTION_FAILURES &&
+      ctx.scratchpad.getActiveToolResultCount() >= MIN_TOOL_RESULTS_FOR_COMPACTION
+    ) {
+      yield { type: 'compaction', phase: 'start', preCompactTokens: estimatedContextTokens };
 
-    const toolStartTime = Date.now();
+      try {
+        const result = await compactContext({
+          model: this.model,
+          systemPrompt: this.systemPrompt,
+          query,
+          toolResults: fullToolResults,
+          signal: this.signal,
+        });
 
-    try {
-      const tool = this.toolMap.get(toolName);
-      if (!tool) {
-        throw new Error(`Tool '${toolName}' not found`);
-      }
+        messageState.messages = this.compactMessages(messageState.messages, result.summary, query);
+        ctx.scratchpad.setCompactionSummary(result.summary);
 
-      // Create a progress channel so subagent tools can stream status updates
-      const channel = createProgressChannel();
-      const config = {
-        metadata: { onProgress: channel.emit },
-        ...(this.signal ? { signal: this.signal } : {}),
-      };
+        if (result.usage) {
+          ctx.tokenCounter.add(result.usage);
+        }
 
-      // Launch tool invocation -- closes the channel when it settles
-      const toolPromise = tool.invoke(toolArgs, config).then(
-        (raw) => { channel.close(); return raw; },
-        (err) => { channel.close(); throw err; },
-      );
+        this.compactionFailures = 0;
+        memoryFlushState.alreadyFlushed = false;
 
-      // Drain progress events in real-time as the tool executes
-      for await (const message of channel) {
-        yield { type: 'tool_progress', tool: toolName, message } as ToolProgressEvent;
-      }
+        const postCompactTokens = estimateTokens(
+          messageState.messages.map(m =>
+            typeof m.content === 'string' ? m.content : JSON.stringify(m.content),
+          ).join('\n'),
+        );
 
-      // Tool has finished -- collect the result
-      const rawResult = await toolPromise;
-      const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
-      const duration = Date.now() - toolStartTime;
+        yield {
+          type: 'compaction',
+          phase: 'end',
+          success: true,
+          preCompactTokens: estimatedContextTokens,
+          postCompactTokens,
+          compactionModel: resolveProvider(this.model).fastModel ?? this.model,
+        };
 
-      yield { type: 'tool_end', tool: toolName, args: toolArgs, result, duration };
-
-      // Record the tool call for limit tracking
-      scratchpad.recordToolCall(toolName, toolQuery);
-
-      // Add full tool result to scratchpad (Anthropic-style: no inline summarization)
-      scratchpad.addToolResult(toolName, toolArgs, result);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      yield { type: 'tool_error', tool: toolName, error: errorMessage };
-
-      // Still record the call even on error (counts toward limit)
-      scratchpad.recordToolCall(toolName, toolQuery);
-
-      // Add error to scratchpad
-      scratchpad.addToolResult(toolName, toolArgs, `Error: ${errorMessage}`);
-    }
-  }
-
-  /**
-   * Extract query string from tool arguments for similarity detection.
-   * Looks for common query-like argument names.
-   */
-  private extractQueryFromArgs(args: Record<string, unknown>): string | undefined {
-    const queryKeys = ['query', 'search', 'question', 'q', 'text', 'input'];
-    
-    for (const key of queryKeys) {
-      if (typeof args[key] === 'string') {
-        return args[key] as string;
+        return;
+      } catch {
+        this.compactionFailures++;
+        yield {
+          type: 'compaction',
+          phase: 'end',
+          success: false,
+          preCompactTokens: estimatedContextTokens,
+        };
       }
     }
-    
-    return undefined;
-  }
 
-  /**
-   * Build initial prompt with conversation history context if available
-   */
-  private buildInitialPrompt(
-    query: string,
-    inMemoryChatHistory?: InMemoryChatHistory
-  ): string {
-    if (!inMemoryChatHistory?.hasMessages()) {
-      return query;
-    }
-
-    const userMessages = inMemoryChatHistory.getUserMessages();
-    if (userMessages.length === 0) {
-      return query;
-    }
-
-    const historyContext = userMessages.map((msg, i) => `${i + 1}. ${msg}`).join('\n');
-    return `Current query to answer: ${query}\n\nPrevious user queries for context:\n${historyContext}`;
-  }
-
-  /**
-   * Build full context data for final answer generation from scratchpad.
-   * Anthropic-style: uses all full tool results (cleared entries were already
-   * handled during iteration, final answer gets comprehensive context).
-   */
-  private buildFullContextForAnswer(_query: string, scratchpad: Scratchpad): string {
-    const contexts = scratchpad.getFullContexts();
-
-    if (contexts.length === 0) {
-      return 'No data was gathered.';
-    }
-
-    // Filter out error results
-    const validContexts = contexts.filter(ctx => !ctx.result.startsWith('Error:'));
-
-    if (validContexts.length === 0) {
-      return 'No data was successfully gathered.';
-    }
-
-    // Format all contexts with full data
-    return validContexts.map(ctx => this.formatToolContext(ctx)).join('\n\n');
-  }
-
-  /**
-   * Format a single tool context entry for the final answer.
-   */
-  private formatToolContext(ctx: ToolContext): string {
-    const description = getToolDescription(ctx.toolName, ctx.args);
-    try {
-      return `### ${description}\n\`\`\`json\n${JSON.stringify(JSON.parse(ctx.result), null, 2)}\n\`\`\``;
-    } catch {
-      // If result is not valid JSON, return as-is
-      return `### ${description}\n${ctx.result}`;
+    // Step 3: Fallback — truncate oldest rounds
+    const removed = this.truncateMessages(messageState.messages, KEEP_TOOL_USES);
+    if (removed > 0) {
+      memoryFlushState.alreadyFlushed = false;
+      yield { type: 'context_cleared', clearedCount: removed, keptCount: KEEP_TOOL_USES };
     }
   }
+}
+
+const MODE_PRIORITY: Record<StreamMode, number> = {
+  requesting: 0,
+  responding: 1,
+  thinking: 2,
+  'tool-input': 3,
+  'tool-use': 4,
+};
+
+/**
+ * Walk one streaming chunk's content and report total char-delta plus the most
+ * "advanced" mode the chunk contains. LangChain content can be a plain string
+ * (most providers) or an array of typed parts (Anthropic).
+ */
+function inspectChunkContent(chunk: AIMessageChunk): { charDelta: number; mode: StreamMode } {
+  const content = chunk.content;
+  if (typeof content === 'string') {
+    return { charDelta: content.length, mode: 'responding' };
+  }
+  if (!Array.isArray(content)) {
+    return { charDelta: 0, mode: 'responding' };
+  }
+
+  let charDelta = 0;
+  let mode: StreamMode = 'responding';
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const partType = (part as { type?: string }).type;
+    if (partType === 'text') {
+      const text = (part as { text?: string }).text;
+      if (typeof text === 'string') charDelta += text.length;
+      if (MODE_PRIORITY.responding > MODE_PRIORITY[mode]) mode = 'responding';
+    } else if (partType === 'thinking' || partType === 'redacted_thinking') {
+      const thinkingText = (part as { thinking?: string }).thinking;
+      if (typeof thinkingText === 'string') charDelta += thinkingText.length;
+      if (MODE_PRIORITY.thinking > MODE_PRIORITY[mode]) mode = 'thinking';
+    } else if (partType === 'tool_use' || partType === 'input_json_delta') {
+      const partialJson = (part as { input?: unknown; partial_json?: string }).partial_json;
+      if (typeof partialJson === 'string') charDelta += partialJson.length;
+      if (MODE_PRIORITY['tool-input'] > MODE_PRIORITY[mode]) mode = 'tool-input';
+    }
+  }
+  return { charDelta, mode };
 }

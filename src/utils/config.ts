@@ -1,19 +1,57 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { dexterPath } from './paths.js';
 
-const SETTINGS_FILE = '.dexter/settings.json';
+const SETTINGS_FILE = dexterPath('settings.json');
 
 // Map legacy model IDs to provider IDs for migration
 const MODEL_TO_PROVIDER_MAP: Record<string, string> = {
+  'gpt-5.6-sol': 'openai',
+  'gpt-5.6-terra': 'openai',
+  'gpt-5.6-luna': 'openai',
+  'gpt-5.5': 'openai',
+  'gpt-5.4': 'openai',
   'gpt-5.2': 'openai',
   'claude-sonnet-4-5': 'anthropic',
   'gemini-3': 'google',
 };
 
+// Deprecated model IDs to upgrade on load
+const DEPRECATED_MODEL_UPGRADES: Record<string, string> = {
+  'gpt-5.6-sol': 'gpt-6-sol',
+  'gpt-5.6-terra': 'gpt-6-sol',
+  'gpt-5.6-luna': 'gpt-6-luna',
+  'gpt-5.5': 'gpt-6-astra',
+  'gpt-5.4': 'gpt-6-astra',
+  'gpt-5.2': 'gpt-6-astra',
+  'claude-sonnet-4-6': 'claude-sonnet-5',
+  'claude-opus-4-8': 'claude-opus-5-5',
+  'claude-fable-5': 'claude-fable-5-1',
+  'gemini-3-flash-preview': 'gemini-3.8-flash',
+  'grok-4-0709': 'grok-4.7',
+  'grok-4-1-fast-reasoning': 'grok-4.7',
+  'kimi-k2-5': 'kimi-k3',
+  'deepseek-v4-flash': 'deepseek-flash',
+};
+
 interface Config {
   provider?: string;
-  modelId?: string;  // Selected model ID (e.g., "gpt-5.2", "ollama:llama3.1")
+  modelId?: string;  // Selected model ID (e.g., "gpt-6-astra", "ollama:llama3.1")
   model?: string;    // Legacy key, kept for migration
+  webSearchPreferredProvider?: 'exa' | 'perplexity' | 'tavily';
+  memory?: {
+    enabled?: boolean;
+    embeddingProvider?: 'openai' | 'gemini' | 'ollama' | 'auto';
+    embeddingModel?: string;
+    maxSessionContextTokens?: number;
+  };
+  /** Bash permission rules (allow/ask/deny), persisted from the approval prompt. */
+  permissions?: {
+    allow?: string[];
+    ask?: string[];
+    deny?: string[];
+    defaultBashDecision?: 'allow' | 'ask' | 'deny';
+  };
   [key: string]: unknown;
 }
 
@@ -24,7 +62,15 @@ export function loadConfig(): Config {
 
   try {
     const content = readFileSync(SETTINGS_FILE, 'utf-8');
-    return JSON.parse(content);
+    let config = JSON.parse(content) as Config;
+
+    // Upgrade deprecated model IDs (e.g. gpt-5.5 -> gpt-6-astra)
+    if (config.modelId && DEPRECATED_MODEL_UPGRADES[config.modelId]) {
+      config.modelId = DEPRECATED_MODEL_UPGRADES[config.modelId];
+      saveConfig(config);
+    }
+
+    return config;
   } catch {
     return {};
   }

@@ -38,14 +38,20 @@ interface CacheEntry {
 /**
  * Build a human-readable label for log messages.
  * If params contains a 'ticker' field, includes it for readability.
- * Example: "/prices/ (AAPL)" or "/search/"
+ * Also appends all other defined params as key=value pairs.
+ * Example: "/prices/ (AAPL) interval=day limit=30" or "/search/ query=earnings"
  */
 export function describeRequest(
   endpoint: string,
   params: Record<string, string | number | string[] | undefined>
 ): string {
   const ticker = typeof params.ticker === 'string' ? params.ticker.toUpperCase() : null;
-  return ticker ? `${endpoint} (${ticker})` : endpoint;
+  const base = ticker ? `${endpoint} (${ticker})` : endpoint;
+  const extraParams = Object.entries(params)
+    .filter(([key, value]) => key !== 'ticker' && value !== undefined && value !== null)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${Array.isArray(value) ? value.join(',') : String(value)}`);
+  return extraParams.length > 0 ? `${base} ${extraParams.join(' ')}` : base;
 }
 
 /**
@@ -122,7 +128,8 @@ function removeCacheFile(filepath: string): void {
  */
 export function readCache(
   endpoint: string,
-  params: Record<string, string | number | string[] | undefined>
+  params: Record<string, string | number | string[] | undefined>,
+  ttlMs?: number,
 ): { data: Record<string, unknown>; url: string } | null {
   const cacheKey = buildCacheKey(endpoint, params);
   const filepath = dexterDataPath('cache', cacheKey);
@@ -136,18 +143,24 @@ export function readCache(
     const content = readFileSync(filepath, 'utf-8');
     const parsed: unknown = JSON.parse(content);
 
-    // Validate entry structure
     if (!isValidCacheEntry(parsed)) {
       logger.warn(`Cache corrupted (invalid structure): ${label}`, { filepath });
       removeCacheFile(filepath);
       return null;
     }
 
+    // TTL enforcement: return null if entry has expired
+    if (ttlMs !== undefined) {
+      const age = Date.now() - Date.parse(parsed.cachedAt);
+      if (age > ttlMs) {
+        return null;
+      }
+    }
+
     return { data: parsed.data, url: parsed.url };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn(`Cache read error: ${label} — ${message}`, { filepath });
-    // Remove corrupted file so subsequent calls don't hit the same error
     removeCacheFile(filepath);
     return null;
   }
