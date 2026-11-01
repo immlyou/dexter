@@ -5,8 +5,9 @@ import type { QueryEventData } from '../types/query'
 import { broadcastQueryEvent } from '../websocket/handler'
 import { clampMaxIterations } from '../config/models'
 
-// Agents run on behalf of untrusted web users: disable tools that can reach arbitrary
-// URLs (the root tool registry skips the browser tool in web mode). Read lazily at Agent.create.
+// Agents run on behalf of untrusted web users: the root tool registry then exposes only
+// its WEB_MODE_TOOLS allow-list (no browser/web_fetch/filesystem/bash/memory/cron).
+// Read lazily at Agent.create.
 process.env.DEXTER_WEB_MODE = '1'
 
 function envMs(name: string, fallback: number): number {
@@ -33,7 +34,7 @@ type AgentRunner = Pick<Agent, 'run'>
 /** Collaborators of executeQuery, injectable for tests. */
 export interface ExecuteQueryDeps {
   timeoutMs: number
-  createAgent: (options: Parameters<typeof Agent.create>[0]) => AgentRunner
+  createAgent: (options: Parameters<typeof Agent.create>[0]) => AgentRunner | Promise<AgentRunner>
   updateQueryStatus: typeof updateQueryStatus
   emitEvent: (queryId: string, data: QueryEventData) => Promise<void>
 }
@@ -80,11 +81,16 @@ export async function executeQuery(
   }
 
   const run = async () => {
-    const agent = deps.createAgent({
+    // Created inside the timed run: Agent.create is async (loads prompt documents)
+    const agent = await deps.createAgent({
       model: config.model,
       modelProvider: config.provider,
       maxIterations: clampMaxIterations(config.maxIterations),
-      signal: controller.signal
+      signal: controller.signal,
+      // Non-CLI channel: drops interactive/CLI-only tools (bash, ask_user_question)
+      channel: 'web',
+      // Persistent memory is per-machine, not per-user: never load or write it for web users
+      memoryEnabled: false
     })
 
     for await (const event of agent.run(queryText)) {
@@ -193,10 +199,6 @@ async function handleAgentEvent(
       })
       break
 
-    case 'answer_start':
-      await emitEvent(queryId, { type: 'answer_start' })
-      break
-
     case 'done':
       // Persist the result before the final event so a client seeing "done" can read the answer
       await updateQueryStatus(queryId, 'completed', {
@@ -218,7 +220,15 @@ async function handleAgentEvent(
       break
 
     case 'context_cleared':
-      // Informational only, not stored
+    case 'stream_progress':
+    case 'microcompact':
+    case 'compaction':
+    case 'queue_drain':
+    case 'memory_recalled':
+    case 'memory_flush':
+    case 'tool_approval':
+    case 'tool_denied':
+      // Informational / CLI-only (memory, approvals are disabled for web runs), not stored
       break
 
     default:
