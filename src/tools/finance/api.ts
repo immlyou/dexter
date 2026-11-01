@@ -131,6 +131,7 @@ async function executeRequest(
       });
       const location = response.headers.get('location');
       if (response.status < 300 || response.status >= 400 || !location) break;
+      await response.body?.cancel();
       if (hop >= MAX_REDIRECTS) throw new Error('too many redirects');
       target = assertApiUrl(new URL(location, target).toString(), label);
     }
