@@ -108,3 +108,22 @@ describe('query execution hard timeout', () => {
     expect(h.releases).toBe(1)
   })
 })
+
+describe('web agent configuration', () => {
+  test('agents are created for the web channel with memory disabled and the run signal', async () => {
+    let options: Parameters<ExecuteQueryDeps['createAgent']>[0] | undefined
+    // An agent that yields nothing keeps the run on the injected (DB-free) collaborators
+    const h = harness(async function* () {}, 1000)
+    await executeQuery('q-web', 'hello', config, h.onSettled, {
+      ...h.deps,
+      createAgent: (o) => {
+        options = o
+        return h.deps.createAgent!(o)
+      }
+    })
+
+    expect(options).toMatchObject({ channel: 'web', memoryEnabled: false, model: config.model })
+    expect(options?.signal).toBeInstanceOf(AbortSignal)
+    expect(process.env.DEXTER_WEB_MODE).toBe('1')
+  })
+})
