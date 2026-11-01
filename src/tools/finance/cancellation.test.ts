@@ -11,15 +11,19 @@ import * as realLlm from '../../model/llm.js';
 // ---------------------------------------------------------------------------
 
 // Delegates to the real module unless a test installs a stub, so other test
-// files sharing this process are unaffected by the module mock.
+// files sharing this process are unaffected by the module mock. The original
+// is captured first: mock.module live-updates the `realLlm` namespace, so
+// calling realLlm.callLlm from the stub would recurse into itself.
+const originalCallLlm = realLlm.callLlm;
 let llmStub: ((prompt: string, options?: { outputSchema?: unknown }) => Promise<unknown>) | null = null;
 mock.module('../../model/llm.js', () => ({
   ...realLlm,
-  callLlm: (prompt: string, options?: Parameters<typeof realLlm.callLlm>[1]) =>
-    llmStub ? llmStub(prompt, options) : realLlm.callLlm(prompt, options),
+  callLlm: (prompt: string, options?: Parameters<typeof originalCallLlm>[1]) =>
+    llmStub ? llmStub(prompt, options) : originalCallLlm(prompt, options),
 }));
 
 const { api, REQUEST_TIMEOUT_MS } = await import('./api.js');
+const { callLlm: mockedCallLlm } = await import('../../model/llm.js');
 const { createReadFilings } = await import('./read-filings.js');
 const { createScreenStocks } = await import('./screen-stocks.js');
 
@@ -49,6 +53,13 @@ afterEach(() => {
 
 afterAll(() => {
   mock.restore();
+});
+
+describe('callLlm module mock', () => {
+  test('falls back to the original callLlm, not the mock itself', () => {
+    expect(mockedCallLlm).not.toBe(originalCallLlm);
+    expect(realLlm.callLlm).toBe(mockedCallLlm);
+  });
 });
 
 describe('executeRequest per-request timeout', () => {
