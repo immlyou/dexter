@@ -51,7 +51,7 @@ export function evaluateBash(command: string, rules: RuleSet = loadRuleSet()): P
 
   const classification = classify(parsed);
   // Only offer "always allow" for a single, fully-understood command.
-  const proposedRule = parsed.segments.length === 1 ? proposeRule(parsed.segments[0]) : undefined;
+  const proposedRule = parsed.segments.length === 1 ? proposeRule(parsed.segments[0]!) : undefined;
 
   // 2. Built-in security floor (not user-overridable).
   for (const seg of parsed.segments) {

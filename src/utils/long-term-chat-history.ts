@@ -106,7 +106,7 @@ export class LongTermChatHistory {
     }
 
     if (this.messages.length > 0) {
-      this.messages[0].agentResponse = response;
+      this.messages[0]!.agentResponse = response;
       await this.save();
     }
   }

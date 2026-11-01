@@ -62,7 +62,7 @@ export function createMessageQueue(): MessageQueue {
       // Find highest-priority item (lowest ordinal)
       let bestIdx = 0;
       for (let i = 1; i < items.length; i++) {
-        if (PRIORITY_ORDER[items[i].priority] < PRIORITY_ORDER[items[bestIdx].priority]) {
+        if (PRIORITY_ORDER[items[i]!.priority] < PRIORITY_ORDER[items[bestIdx]!.priority]) {
           bestIdx = i;
         }
       }
@@ -87,7 +87,7 @@ export function createMessageQueue(): MessageQueue {
       if (items.length === 0) return undefined;
       let bestIdx = 0;
       for (let i = 1; i < items.length; i++) {
-        if (PRIORITY_ORDER[items[i].priority] < PRIORITY_ORDER[items[bestIdx].priority]) {
+        if (PRIORITY_ORDER[items[i]!.priority] < PRIORITY_ORDER[items[bestIdx]!.priority]) {
           bestIdx = i;
         }
       }

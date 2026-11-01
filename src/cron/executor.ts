@@ -71,7 +71,7 @@ function isWithinActiveHours(activeHours?: ActiveHours): boolean {
 
 function errorBackoffMs(consecutiveErrors: number): number {
   const idx = Math.min(consecutiveErrors - 1, BACKOFF_SCHEDULE_MS.length - 1);
-  return BACKOFF_SCHEDULE_MS[Math.max(0, idx)];
+  return BACKOFF_SCHEDULE_MS[Math.max(0, idx)]!;
 }
 
 /**
@@ -84,7 +84,7 @@ function findTargetSession(): SessionEntry | null {
   const entries = Object.values(store).filter((e) => e.lastTo);
   if (entries.length === 0) return null;
   entries.sort((a, b) => b.updatedAt - a.updatedAt);
-  return entries[0];
+  return entries[0]!;
 }
 
 /**

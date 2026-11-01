@@ -119,7 +119,7 @@ function parseTweets(raw: RawXResponse): XTweet[] {
 function parseSince(since: string): string | null {
   const match = since.match(/^(\d+)(m|h|d)$/);
   if (match) {
-    const num = parseInt(match[1]);
+    const num = parseInt(match[1]!);
     const unit = match[2];
     const ms =
       unit === 'm' ? num * 60_000 :

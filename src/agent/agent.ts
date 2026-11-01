@@ -551,7 +551,7 @@ export class Agent {
     const roundsToRemove = Math.max(0, rounds.length - keepRounds);
     if (roundsToRemove === 0) return 0;
 
-    const removeEnd = rounds[roundsToRemove - 1].end;
+    const removeEnd = rounds[roundsToRemove - 1]!.end;
     const removed = removeEnd - roundStartIndex;
     messages.splice(roundStartIndex, removed);
     return removed;
@@ -562,7 +562,7 @@ export class Agent {
    */
   private compactMessages(messages: BaseMessage[], summary: string, query: string): BaseMessage[] {
     return [
-      messages[0], // SystemMessage
+      messages[0]!, // SystemMessage
       new HumanMessage(`${query}\n\n${summary}`),
     ];
   }

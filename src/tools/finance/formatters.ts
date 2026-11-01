@@ -300,7 +300,7 @@ export function formatEarnings(data: unknown, args?: Rec): string {
     const title = ticker
       ? `${ticker} Earnings`
       : (rows.length === 1
-        ? `${String(rows[0].ticker ?? '').toUpperCase()} Earnings`
+        ? `${String(rows[0]!.ticker ?? '').toUpperCase()} Earnings`
         : 'Latest Earnings Feed');
     const lines = [title, ''];
     lines.push('| Ticker | Period | Fiscal | Source | Filed | Revenue | EPS | Signals |');

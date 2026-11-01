@@ -80,6 +80,6 @@ export const SUBAGENT_TYPE_NAMES = Object.keys(SUBAGENT_TYPES) as [string, ...st
 
 /** Resolve a type's tool allow-list with disallowed tools stripped defensively. */
 export function resolveSubagentTools(typeKey: string): string[] {
-  const cfg = SUBAGENT_TYPES[typeKey] ?? SUBAGENT_TYPES[DEFAULT_SUBAGENT_TYPE];
+  const cfg = SUBAGENT_TYPES[typeKey] ?? SUBAGENT_TYPES[DEFAULT_SUBAGENT_TYPE]!;
   return cfg.tools.filter(t => !SUBAGENT_DISALLOWED_TOOLS.has(t));
 }

@@ -85,7 +85,7 @@ export function createSpawnSubagent(model: string): DynamicStructuredTool {
       const signal = config?.signal as AbortSignal | undefined;
 
       const typeKey = input.subagent_type ?? DEFAULT_SUBAGENT_TYPE;
-      const typeCfg = SUBAGENT_TYPES[typeKey] ?? SUBAGENT_TYPES[DEFAULT_SUBAGENT_TYPE];
+      const typeCfg = SUBAGENT_TYPES[typeKey] ?? SUBAGENT_TYPES[DEFAULT_SUBAGENT_TYPE]!;
       const toolAllowlist = resolveSubagentTools(typeKey);
 
       // Lazy import to break the registry → spawn-subagent → agent → registry cycle.

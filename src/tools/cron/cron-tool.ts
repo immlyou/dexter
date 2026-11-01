@@ -180,7 +180,7 @@ export const cronTool = new DynamicStructuredTool({
         const idx = store.jobs.findIndex((j) => j.id === input.jobId);
         if (idx === -1) return `Error: job ${input.jobId} not found.`;
 
-        const removed = store.jobs.splice(idx, 1)[0];
+        const removed = store.jobs.splice(idx, 1)[0]!;
         saveCronStore(store);
         return `Removed job "${removed.name}" (id: ${removed.id}).`;
       }
