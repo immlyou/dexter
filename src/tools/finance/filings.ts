@@ -27,11 +27,9 @@ export async function getFilingItemTypes(): Promise<FilingItemTypes> {
     return cachedItemTypes;
   }
 
-  const response = await fetch('https://api.financialdatasets.ai/filings/items/types/');
-  if (!response.ok) {
-    throw new Error(`[Financial Datasets API] Failed to fetch filing item types: ${response.status}`);
-  }
-  const itemTypes = (await response.json()) as FilingItemTypes;
+  // Through api.get so the request honours the run's abort signal and timeout.
+  const { data } = await api.get('/filings/items/types/', {});
+  const itemTypes = data as unknown as FilingItemTypes;
   cachedItemTypes = itemTypes;
   return itemTypes;
 }

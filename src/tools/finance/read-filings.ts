@@ -196,14 +196,19 @@ export function createReadFilings(model: string): DynamicStructuredTool {
       let filingsResult: { data: unknown[]; sourceUrls: string[]; warnings: string[] };
       let itemTypes: FilingItemTypes;
       try {
-        const [filingsRaw, fetchedItemTypes] = await Promise.all([
-          getFilings.invoke({
-            ticker: filingPlan.ticker,
-            filing_type: filingPlan.filing_types,
-            limit: filingLimit,
-          }),
-          getFilingItemTypes(),
-        ]);
+        const [filingsRaw, fetchedItemTypes] = await withTimeout(
+          () => Promise.all([
+            getFilings.invoke({
+              ticker: filingPlan.ticker,
+              filing_type: filingPlan.filing_types,
+              limit: filingLimit,
+            }),
+            getFilingItemTypes(),
+          ]),
+          SUB_TOOL_TIMEOUT_MS,
+          'filings metadata',
+          config?.signal,
+        );
         const parsedFilings = JSON.parse(
           typeof filingsRaw === 'string' ? filingsRaw : JSON.stringify(filingsRaw)
         ) as { data?: unknown; sourceUrls?: unknown; warnings?: unknown };

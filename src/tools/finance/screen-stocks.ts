@@ -5,6 +5,7 @@ import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
 import { getCurrentDate } from '../../agent/prompts.js';
 import { api } from './api.js';
+import { withTimeout, SUB_TOOL_TIMEOUT_MS } from './utils.js';
 
 /**
  * Rich description for the screen_stocks tool.
@@ -125,7 +126,7 @@ export function createScreenStocks(model: string): DynamicStructuredTool {
       onProgress?.('Loading screener metrics...');
       let metrics: Record<string, unknown>;
       try {
-        metrics = await getScreenerFilters();
+        metrics = await withTimeout(getScreenerFilters, SUB_TOOL_TIMEOUT_MS, 'screener metrics', config?.signal);
       } catch (error) {
         return formatToolResult(
           {
@@ -159,11 +160,16 @@ export function createScreenStocks(model: string): DynamicStructuredTool {
       // Step 3: POST to screener API
       onProgress?.('Screening stocks...');
       try {
-        const { data, url } = await api.post('/financials/search/screener/', {
-          filters: filters.filters,
-          currency: filters.currency,
-          limit: filters.limit,
-        });
+        const { data, url } = await withTimeout(
+          () => api.post('/financials/search/screener/', {
+            filters: filters.filters,
+            currency: filters.currency,
+            limit: filters.limit,
+          }),
+          SUB_TOOL_TIMEOUT_MS,
+          'stock screener',
+          config?.signal,
+        );
         return formatToolResult(data, [url]);
       } catch (error) {
         return formatToolResult(

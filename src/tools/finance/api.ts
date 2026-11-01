@@ -7,6 +7,9 @@ const API_ORIGIN = new URL(BASE_URL).origin;
 
 // A year of daily prices is ~25 pages; this only stops runaway or cyclic pagination.
 export const MAX_PAGES = 100;
+// Per-request (per hop) budget, so a stalled connection can't hang a call
+// that has no caller-supplied abort signal.
+export const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
 
 // Abort signal for the current tool invocation. Carried implicitly so the ~30
@@ -121,7 +124,9 @@ async function executeRequest(
     logger.warn(`[Financial Datasets API] call without key: ${label}`);
   }
 
-  const signal = requestSignal.getStore();
+  const parentSignal = requestSignal.getStore();
+  const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+  const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
   let response: Response;
   let target = assertApiUrl(url, label);
   try {
