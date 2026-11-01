@@ -197,6 +197,57 @@ describe('api.get pagination hardening', () => {
     expect(readCache('/prices/', { ticker: 'AAPL' })).toBeNull();
   });
 
+  // Streams `chunks` JSON chunks of `chunkSize` chars, counting how many were pulled.
+  function streamingResponse(prefix: string, chunkSize: number, chunks: number, pulled: { n: number }): Response {
+    const enc = new TextEncoder();
+    let i = 0;
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (i === 0) controller.enqueue(enc.encode(prefix));
+        if (i < chunks) {
+          pulled.n++;
+          controller.enqueue(enc.encode('x'.repeat(chunkSize)));
+          i++;
+        } else {
+          controller.enqueue(enc.encode('"}]}'));
+          controller.close();
+        }
+      },
+    }), { status: 200 });
+  }
+
+  test('a single oversized first page is cut off mid-stream, truncated and not cached', async () => {
+    const pulled = { n: 0 };
+    const chunkSize = 1_000_000;
+    const chunks = Math.ceil(MAX_AGGREGATE_CHARS / chunkSize) * 4;
+    handler = () => streamingResponse('{"prices":[{"blob":"', chunkSize, chunks, pulled);
+
+    const { data, warnings } = await api.get('/prices/', { ticker: 'AAPL' }, { cacheable: true });
+    expect(calls.length).toBe(1);
+    expect(pulled.n).toBeLessThan(chunks / 2);
+    expect(data.truncated).toBe(true);
+    expect(data.prices).toBeUndefined();
+    expect(warnings?.[0]).toMatch(/INCOMPLETE DATA/);
+    expect(readCache('/prices/', { ticker: 'AAPL' })).toBeNull();
+  });
+
+  test('a follow-up page larger than the remaining budget is dropped before merging', async () => {
+    const pulled = { n: 0 };
+    const chunkSize = 1_000_000;
+    const chunks = Math.ceil(MAX_AGGREGATE_CHARS / chunkSize) * 4;
+    handler = (url) => url.includes('cursor=2')
+      ? streamingResponse('{"prices":[{"blob":"', chunkSize, chunks, pulled)
+      : jsonResponse({ prices: [{ time: '1' }], next_page_url: 'https://api.financialdatasets.ai/prices/?cursor=2' });
+
+    const { data, warnings } = await api.get('/prices/', { ticker: 'AAPL' }, { cacheable: true });
+    expect(calls.length).toBe(2);
+    expect(pulled.n).toBeLessThan(chunks / 2);
+    expect(data.prices).toEqual([{ time: '1' }]);
+    expect(data.truncated).toBe(true);
+    expect(warnings?.[0]).toMatch(/INCOMPLETE DATA/);
+    expect(readCache('/prices/', { ticker: 'AAPL' })).toBeNull();
+  });
+
   test('a complete cacheable result is still cached', async () => {
     handler = () => jsonResponse({ prices: [{ time: '1' }] });
     await api.get('/prices/', { ticker: 'MSFT' }, { cacheable: true });

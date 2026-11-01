@@ -114,13 +114,37 @@ function mergePage(accumulated: Record<string, unknown>, page: Record<string, un
 }
 
 /**
+ * Read the body as text, giving up as soon as it exceeds `maxChars` so an
+ * oversized page is never fully buffered. Returns null when over budget.
+ */
+async function readTextWithin(response: Response, maxChars: number): Promise<string | null> {
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    if (text.length > maxChars) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+  }
+  text += decoder.decode();
+  return text.length > maxChars ? null : text;
+}
+
+/**
  * Shared request execution: handles API key, error handling, logging, and response parsing.
+ * Returns null when the body exceeds `maxChars` (the read is aborted before parsing).
  */
 async function executeRequest(
   url: string,
   label: string,
   init: RequestInit,
-): Promise<{ data: Record<string, unknown>; size: number }> {
+  maxChars: number,
+): Promise<{ data: Record<string, unknown>; size: number } | null> {
   const apiKey = getApiKey();
 
   if (!apiKey) {
@@ -164,13 +188,17 @@ async function executeRequest(
   }
 
   // Read as text first so pagination can account for the size of each page.
-  let text: string;
+  let text: string | null;
   try {
-    text = await response.text();
+    text = await readTextWithin(response, maxChars);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(`[Financial Datasets API] network error: ${label} — ${message}`);
     throw new Error(`[Financial Datasets API] request failed for ${label}: ${message}`);
+  }
+  if (text === null) {
+    logger.warn(`[Financial Datasets API] response exceeded ${maxChars} chars: ${label}`);
+    return null;
   }
   let data: unknown;
   try {
@@ -213,18 +241,20 @@ export const api = {
       }
     }
 
-    const first = await executeRequest(url.toString(), label, {});
-    const data = first.data;
-    let totalSize = first.size;
+    // Every page is read against the remaining aggregate budget, so a single
+    // oversized page is cut off mid-stream instead of being buffered first.
+    const first = await executeRequest(url.toString(), label, {}, MAX_AGGREGATE_CHARS);
+    const data: Record<string, unknown> = first?.data ?? {};
+    let totalSize = first?.size ?? 0;
 
     // Reassemble the full result: follow next_page_url (absolute and
     // self-contained — request it verbatim) until the last page. This runs
     // before the cache write so caches only ever hold complete results.
     // executeRequest rejects next URLs outside the API origin.
     const seen = new Set<string>([url.toString()]);
-    let complete = true;
+    let complete = first !== null;
     let nextPageUrl = data.next_page_url;
-    while (typeof nextPageUrl === 'string' && nextPageUrl) {
+    while (complete && typeof nextPageUrl === 'string' && nextPageUrl) {
       if (seen.has(nextPageUrl) || seen.size >= MAX_PAGES || totalSize >= MAX_AGGREGATE_CHARS) {
         logger.warn(`[Financial Datasets API] pagination stopped after ${seen.size} pages: ${label}`);
         complete = false;
@@ -232,10 +262,14 @@ export const api = {
       }
       seen.add(nextPageUrl);
       requestSignal.getStore()?.throwIfAborted();
-      const { data: page, size } = await executeRequest(nextPageUrl, label, {});
-      totalSize += size;
-      mergePage(data, page);
-      nextPageUrl = page.next_page_url;
+      const result = await executeRequest(nextPageUrl, label, {}, MAX_AGGREGATE_CHARS - totalSize);
+      if (!result) {
+        complete = false;
+        break;
+      }
+      totalSize += result.size;
+      mergePage(data, result.data);
+      nextPageUrl = result.data.next_page_url;
     }
     delete data.next_page_url;
     if (!complete) {
@@ -259,13 +293,16 @@ export const api = {
     const label = `POST ${endpoint}`;
     const url = `${BASE_URL}${endpoint}`;
 
-    const { data } = await executeRequest(url, label, {
+    const result = await executeRequest(url, label, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    });
+    }, MAX_AGGREGATE_CHARS);
+    if (!result) {
+      throw new Error(`[Financial Datasets API] response too large for ${label}`);
+    }
 
-    return { data, url };
+    return { data: result.data, url };
   },
 };
 
