@@ -1,7 +1,37 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { readCache, writeCache, describeRequest } from '../../utils/cache.js';
 import { logger } from '../../utils/logger.js';
 
 const BASE_URL = 'https://api.financialdatasets.ai';
+const API_ORIGIN = new URL(BASE_URL).origin;
+
+// A year of daily prices is ~25 pages; this only stops runaway or cyclic pagination.
+export const MAX_PAGES = 100;
+const MAX_REDIRECTS = 5;
+
+// Abort signal for the current tool invocation. Carried implicitly so the ~30
+// sub-tool call sites don't each need to thread a signal through to api.get.
+const requestSignal = new AsyncLocalStorage<AbortSignal>();
+
+/** Run `fn` so every API request it makes is cancelled when `signal` aborts. */
+export function runWithAbortSignal<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  return requestSignal.run(signal, fn);
+}
+
+/** Only the configured HTTPS API origin ever receives the API key. */
+function assertApiUrl(raw: string, label: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`[Financial Datasets API] invalid URL for ${label}`);
+  }
+  if (url.protocol !== 'https:' || url.origin !== API_ORIGIN) {
+    logger.error(`[Financial Datasets API] refused off-origin URL: ${label}`);
+    throw new Error(`[Financial Datasets API] refused to follow URL outside ${API_ORIGIN}`);
+  }
+  return url.toString();
+}
 
 export interface ApiResponse {
   data: Record<string, unknown>;
@@ -83,15 +113,27 @@ async function executeRequest(
     logger.warn(`[Financial Datasets API] call without key: ${label}`);
   }
 
+  const signal = requestSignal.getStore();
   let response: Response;
+  let target = assertApiUrl(url, label);
   try {
-    response = await fetch(url, {
-      ...init,
-      headers: {
-        'x-api-key': apiKey,
-        ...init.headers,
-      },
-    });
+    // Redirects are followed manually so the API key is never forwarded off-origin.
+    for (let hop = 0; ; hop++) {
+      signal?.throwIfAborted();
+      response = await fetch(target, {
+        ...init,
+        redirect: 'manual',
+        signal,
+        headers: {
+          'x-api-key': apiKey,
+          ...init.headers,
+        },
+      });
+      const location = response.headers.get('location');
+      if (response.status < 300 || response.status >= 400 || !location) break;
+      if (hop >= MAX_REDIRECTS) throw new Error('too many redirects');
+      target = assertApiUrl(new URL(location, target).toString(), label);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.error(`[Financial Datasets API] network error: ${label} — ${message}`);
@@ -147,16 +189,29 @@ export const api = {
     // Reassemble the full result: follow next_page_url (absolute and
     // self-contained — request it verbatim) until the last page. This runs
     // before the cache write so caches only ever hold complete results.
+    // executeRequest rejects next URLs outside the API origin.
+    const seen = new Set<string>([url.toString()]);
+    let complete = true;
     let nextPageUrl = data.next_page_url;
     while (typeof nextPageUrl === 'string' && nextPageUrl) {
+      if (seen.has(nextPageUrl) || seen.size >= MAX_PAGES) {
+        logger.warn(`[Financial Datasets API] pagination stopped after ${seen.size} pages: ${label}`);
+        complete = false;
+        break;
+      }
+      seen.add(nextPageUrl);
+      requestSignal.getStore()?.throwIfAborted();
       const page = await executeRequest(nextPageUrl, label, {});
       mergePage(data, page);
       nextPageUrl = page.next_page_url;
     }
     delete data.next_page_url;
+    if (!complete) {
+      data.truncated = true;
+    }
 
     // Persist for future requests when the caller marked the response as cacheable
-    if (options?.cacheable) {
+    if (options?.cacheable && complete) {
       writeCache(endpoint, params, data, url.toString());
     }
 

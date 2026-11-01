@@ -163,7 +163,7 @@ export function createGetFinancials(model: string): DynamicStructuredTool {
             if (!tool) {
               throw new Error(`Tool '${tc.name}' not found`);
             }
-            const rawResult = await withTimeout(tool.invoke(tc.args), SUB_TOOL_TIMEOUT_MS, tc.name);
+            const rawResult = await withTimeout(() => tool.invoke(tc.args), SUB_TOOL_TIMEOUT_MS, tc.name, config?.signal);
             const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
             const parsed = JSON.parse(result);
             return {
