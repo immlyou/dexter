@@ -2,6 +2,21 @@ import { DynamicStructuredTool } from '@langchain/core/tools';
 import { dirname, resolve } from 'path';
 import { z } from 'zod';
 import { getSkill, discoverSkills } from '../skills/index.js';
+import { isWebMode } from '../utils/web-mode.js';
+
+/**
+ * Resolve relative markdown links to absolute paths so the agent's read_file
+ * tool can find referenced files (e.g., sector-wacc.md). Web mode has no
+ * read_file, and absolute paths would expose the server's layout, so links are
+ * left as written there.
+ */
+export function resolveSkillLinks(instructions: string, skillDir: string, webMode = isWebMode()): string {
+  if (webMode) return instructions;
+  return instructions.replace(/\[([^\]]+)\]\(([^)]+\.md)\)/g, (match, label, relPath) => {
+    if (relPath.startsWith('/') || relPath.startsWith('http')) return match;
+    return `[${label}](${resolve(skillDir, relPath)})`;
+  });
+}
 
 /**
  * Rich description for the skill tool.
@@ -56,18 +71,7 @@ export const skillTool = new DynamicStructuredTool({
       result += `**Arguments provided:** ${args}\n\n`;
     }
     
-    // Resolve relative markdown links to absolute paths so the agent's
-    // read_file tool can find referenced files (e.g., sector-wacc.md).
-    const skillDir = dirname(skillDef.path);
-    const resolved = skillDef.instructions.replace(
-      /\[([^\]]+)\]\(([^)]+\.md)\)/g,
-      (_match, label, relPath) => {
-        if (relPath.startsWith('/') || relPath.startsWith('http')) return _match;
-        return `[${label}](${resolve(skillDir, relPath)})`;
-      },
-    );
-
-    result += resolved;
+    result += resolveSkillLinks(skillDef.instructions, dirname(skillDef.path));
 
     return result;
   },
