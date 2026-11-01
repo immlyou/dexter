@@ -1,0 +1,15 @@
+# Build context is the repo root (see backend/Dockerfile); keep it small and secret-free
+**/node_modules
+**/.env
+**/.env.*
+!**/.env.example
+.git
+.omc
+.pm
+.dexter
+frontend
+docs
+coverage
+logs
+**/*.log
+**/.DS_Store

@@ -15,7 +15,7 @@ function pruneExpired(): void {
 
   // Remove expired entries from the front of insertion order
   while (insertionOrder.length > 0) {
-    const oldestKey = insertionOrder[0];
+    const oldestKey = insertionOrder[0]!;
     const entry = cache.get(oldestKey);
     if (entry && entry.timestamp < cutoff) {
       cache.delete(oldestKey);

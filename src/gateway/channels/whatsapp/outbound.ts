@@ -47,7 +47,7 @@ function getActive(accountId?: string): ActiveListener {
 
 function extractE164FromJid(jid: string): string | null {
   const localPart = jid.split('@')[0] ?? '';
-  const rawPhone = localPart.includes(':') ? localPart.split(':')[0] : localPart;
+  const rawPhone = localPart.includes(':') ? localPart.split(':')[0]! : localPart;
   if (!/^\d+$/.test(rawPhone)) {
     return null;
   }

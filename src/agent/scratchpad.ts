@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, appendFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { createHash } from 'crypto';
-import { dexterPath } from '../utils/paths.js';
+import { dexterDataPath } from '../utils/paths.js';
 
 /**
  * Record of a tool call for external consumers (e.g., DoneEvent)
@@ -55,7 +55,9 @@ const DEFAULT_LIMIT_CONFIG: ToolLimitConfig = {
 /**
  * Append-only scratchpad for tracking agent work on a query.
  * Uses JSONL format (newline-delimited JSON) for resilient appending.
- * Files are persisted in .dexter/scratchpad/ for debugging/history.
+ * Files are persisted in .dexter/scratchpad/ (or $DEXTER_DATA_DIR/scratchpad/) for
+ * debugging/history. If that directory is not writable the scratchpad keeps working
+ * in memory, so a read-only filesystem never fails a query.
  * 
  * This is the single source of truth for all agent work on a query.
  * 
@@ -64,8 +66,10 @@ const DEFAULT_LIMIT_CONFIG: ToolLimitConfig = {
  * - Query similarity detection to help prevent retry loops
  */
 export class Scratchpad {
-  private readonly scratchpadDir = dexterPath('scratchpad');
-  private readonly filepath: string;
+  private readonly scratchpadDir = dexterDataPath('scratchpad');
+  // null once file persistence is unavailable; `memoryEntries` is then authoritative
+  private filepath: string | null;
+  private memoryEntries: ScratchpadEntry[] = [];
   private readonly limitConfig: ToolLimitConfig;
 
   // In-memory tracking for tool limits (also persisted in JSONL)
@@ -84,10 +88,6 @@ export class Scratchpad {
   constructor(query: string, limitConfig?: Partial<ToolLimitConfig>) {
     this.limitConfig = { ...DEFAULT_LIMIT_CONFIG, ...limitConfig };
 
-    if (!existsSync(this.scratchpadDir)) {
-      mkdirSync(this.scratchpadDir, { recursive: true });
-    }
-
     const hash = createHash('md5').update(query).digest('hex').slice(0, 12);
     const now = new Date();
     const timestamp = now.toISOString()
@@ -95,6 +95,14 @@ export class Scratchpad {
       .replace('T', '-')      // "2026-01-21-15:30:45"
       .replace(/:/g, '');     // "2026-01-21-153045"
     this.filepath = join(this.scratchpadDir, `${timestamp}_${hash}.jsonl`);
+
+    try {
+      if (!existsSync(this.scratchpadDir)) {
+        mkdirSync(this.scratchpadDir, { recursive: true });
+      }
+    } catch {
+      this.filepath = null;
+    }
 
     // Write initial entry with the query
     this.append({ type: 'init', content: query, timestamp: new Date().toISOString() });
@@ -450,7 +458,26 @@ export class Scratchpad {
    * Append-only write
    */
   private append(entry: ScratchpadEntry): void {
-    appendFileSync(this.filepath, JSON.stringify(entry) + '\n');
+    if (this.filepath) {
+      try {
+        appendFileSync(this.filepath, JSON.stringify(entry) + '\n');
+        return;
+      } catch {
+        // Disk became unwritable: carry what was persisted so far into memory
+        try {
+          this.memoryEntries = this.readEntries();
+        } catch {
+          this.memoryEntries = [];
+        }
+        this.filepath = null;
+      }
+    }
+    this.memoryEntries.push(entry);
+  }
+
+  /** Whether entries are being persisted to disk (false = in-memory fallback). */
+  isPersisted(): boolean {
+    return this.filepath !== null;
   }
 
   /**
@@ -473,6 +500,9 @@ export class Scratchpad {
    * a single bad line crashing tool-context methods.
    */
   private readEntries(): ScratchpadEntry[] {
+    if (!this.filepath) {
+      return [...this.memoryEntries];
+    }
     if (!existsSync(this.filepath)) {
       return [];
     }

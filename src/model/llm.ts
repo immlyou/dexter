@@ -6,10 +6,11 @@ import { ChatOllama } from '@langchain/ollama';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
 import { SystemMessage, HumanMessage } from '@langchain/core/messages';
 import { BaseChatModel } from '@langchain/core/language_models/chat_models';
-import { StructuredToolInterface } from '@langchain/core/tools';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import { Runnable } from '@langchain/core/runnables';
 import { z } from 'zod';
 import { DEFAULT_SYSTEM_PROMPT } from '@/agent/prompts';
+import { extractTextContent } from '@/utils/ai-message';
 import type { TokenUsage } from '@/agent/types';
 import { logger } from '@/utils';
 import { classifyError, isNonRetryableError } from '@/utils/errors';
@@ -265,7 +266,7 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
   // If no outputSchema and no tools, extract content from AIMessage
   // When tools are provided, return the full AIMessage to preserve tool_calls
   if (!outputSchema && !tools && result && typeof result === 'object' && 'content' in result) {
-    return { response: (result as { content: string }).content, usage };
+    return { response: extractTextContent(result as AIMessage), usage };
   }
   return { response: result as AIMessage, usage };
 }
@@ -279,11 +280,11 @@ export async function callLlm(prompt: string, options: CallLlmOptions = {}): Pro
  * caching (~90% input token savings on repeated calls).
  */
 function annotateSystemMessageForCaching(messages: BaseMessage[]): BaseMessage[] {
-  if (messages.length === 0 || messages[0]._getType() !== 'system') {
+  if (messages.length === 0 || messages[0]!._getType() !== 'system') {
     return messages;
   }
 
-  const systemMsg = messages[0];
+  const systemMsg = messages[0]!;
   const text = typeof systemMsg.content === 'string'
     ? systemMsg.content
     : JSON.stringify(systemMsg.content);

@@ -33,7 +33,7 @@ export function checkApiKeyExists(apiKeyName: string): boolean {
       const trimmed = line.trim();
       if (trimmed && !trimmed.startsWith('#') && trimmed.includes('=')) {
         const [key, ...valueParts] = trimmed.split('=');
-        if (key.trim() === apiKeyName) {
+        if (key!.trim() === apiKeyName) {
           const val = valueParts.join('=').trim();
           if (val && !val.startsWith('your-')) {
             return true;
@@ -60,7 +60,7 @@ export function saveApiKeyToEnv(apiKeyName: string, apiKeyValue: string): boolea
         if (!stripped || stripped.startsWith('#')) {
           lines.push(line);
         } else if (stripped.includes('=')) {
-          const key = stripped.split('=')[0].trim();
+          const key = stripped.split('=')[0]!.trim();
           if (key === apiKeyName) {
             lines.push(`${apiKeyName}=${apiKeyValue}`);
             keyUpdated = true;
@@ -73,7 +73,7 @@ export function saveApiKeyToEnv(apiKeyName: string, apiKeyValue: string): boolea
       }
 
       if (!keyUpdated) {
-        if (lines.length > 0 && !lines[lines.length - 1].endsWith('\n')) {
+        if (lines.length > 0 && !lines[lines.length - 1]!.endsWith('\n')) {
           lines.push('');
         }
         lines.push(`${apiKeyName}=${apiKeyValue}`);

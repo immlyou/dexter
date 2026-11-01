@@ -27,11 +27,9 @@ export async function getFilingItemTypes(): Promise<FilingItemTypes> {
     return cachedItemTypes;
   }
 
-  const response = await fetch('https://api.financialdatasets.ai/filings/items/types/');
-  if (!response.ok) {
-    throw new Error(`[Financial Datasets API] Failed to fetch filing item types: ${response.status}`);
-  }
-  const itemTypes = (await response.json()) as FilingItemTypes;
+  // Through api.get so the request honours the run's abort signal and timeout.
+  const { data } = await api.get('/filings/items/types/', {});
+  const itemTypes = data as unknown as FilingItemTypes;
   cachedItemTypes = itemTypes;
   return itemTypes;
 }
@@ -64,8 +62,8 @@ export const getFilings = new DynamicStructuredTool({
       limit: input.limit,
       filing_type: input.filing_type,
     };
-    const { data, url } = await api.get('/filings/', params);
-    return formatToolResult(data.filings || [], [url]);
+    const { data, url, warnings } = await api.get('/filings/', params);
+    return formatToolResult(data.filings || [], [url], warnings);
   },
 });
 
@@ -96,8 +94,8 @@ export const get10KFilingItems = new DynamicStructuredTool({
       item: input.items, // API expects 'item' not 'items'
     };
     // SEC filings are legally immutable once filed
-    const { data, url } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
-    return formatToolResult(data, [url]);
+    const { data, url, warnings } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
+    return formatToolResult(data, [url], warnings);
   },
 });
 
@@ -128,8 +126,8 @@ export const get10QFilingItems = new DynamicStructuredTool({
       item: input.items, // API expects 'item' not 'items'
     };
     // SEC filings are legally immutable once filed
-    const { data, url } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
-    return formatToolResult(data, [url]);
+    const { data, url, warnings } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
+    return formatToolResult(data, [url], warnings);
   },
 });
 
@@ -153,8 +151,8 @@ export const get8KFilingItems = new DynamicStructuredTool({
       accession_number: input.accession_number,
     };
     // SEC filings are legally immutable once filed
-    const { data, url } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
-    return formatToolResult(data, [url]);
+    const { data, url, warnings } = await api.get('/filings/items/', params, { cacheable: true, ttlMs: TTL_24H });
+    return formatToolResult(data, [url], warnings);
   },
 });
 

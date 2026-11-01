@@ -92,8 +92,8 @@ export function parseApiErrorInfo(raw?: string): ApiErrorInfo | null {
 
   const httpMatch = trimmed.match(HTTP_STATUS_PREFIX_RE);
   if (httpMatch) {
-    httpCode = Number.parseInt(httpMatch[1], 10);
-    trimmed = httpMatch[2].trim();
+    httpCode = Number.parseInt(httpMatch[1]!, 10);
+    trimmed = httpMatch[2]!.trim();
   }
 
   if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) {

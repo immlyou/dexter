@@ -17,8 +17,8 @@ export const getCryptoPriceSnapshot = new DynamicStructuredTool({
   schema: CryptoPriceSnapshotInputSchema,
   func: async (input) => {
     const params = { ticker: input.ticker };
-    const { data, url } = await api.get('/crypto/prices/snapshot/', params);
-    return formatToolResult(data.snapshot || {}, [url]);
+    const { data, url, warnings } = await api.get('/crypto/prices/snapshot/', params);
+    return formatToolResult(data.snapshot || {}, [url], warnings);
   },
 });
 
@@ -56,8 +56,8 @@ export const getCryptoPrices = new DynamicStructuredTool({
     const endDate = new Date(input.end_date + 'T00:00:00');
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const { data, url } = await api.get('/crypto/prices/', params, { cacheable: endDate < today });
-    return formatToolResult(data.prices || [], [url]);
+    const { data, url, warnings } = await api.get('/crypto/prices/', params, { cacheable: endDate < today });
+    return formatToolResult(data.prices || [], [url], warnings);
   },
 });
 
@@ -66,7 +66,7 @@ export const getCryptoTickers = new DynamicStructuredTool({
   description: `Retrieves the list of available cryptocurrency tickers that can be used with the crypto price tools.`,
   schema: z.object({}),
   func: async () => {
-    const { data, url } = await api.get('/crypto/prices/tickers/', {}, { cacheable: true, ttlMs: 24 * 60 * 60 * 1000 });
-    return formatToolResult(data.tickers || [], [url]);
+    const { data, url, warnings } = await api.get('/crypto/prices/tickers/', {}, { cacheable: true, ttlMs: 24 * 60 * 60 * 1000 });
+    return formatToolResult(data.tickers || [], [url], warnings);
   },
 });

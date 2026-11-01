@@ -1,0 +1,140 @@
+@import "tailwindcss";
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background-color: rgb(249 250 251);
+  color: rgb(17 24 39);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Markdown Preview Styles */
+.markdown-preview h1 {
+  font-size: 2em;
+  font-weight: bold;
+  margin: 1em 0 0.5em 0;
+  padding-bottom: 0.3em;
+  border-bottom: 2px solid #4caf50;
+  color: #2c3e50;
+}
+
+.markdown-preview h2 {
+  font-size: 1.5em;
+  font-weight: bold;
+  margin: 1em 0 0.5em 0;
+  padding-bottom: 0.2em;
+  border-bottom: 1px solid #81c784;
+  color: #2c3e50;
+}
+
+.markdown-preview h3 {
+  font-size: 1.25em;
+  font-weight: bold;
+  margin: 0.8em 0 0.4em 0;
+  color: #388e3c;
+}
+
+.markdown-preview h4 {
+  font-size: 1.1em;
+  font-weight: bold;
+  margin: 0.6em 0 0.3em 0;
+  color: #388e3c;
+}
+
+.markdown-preview p {
+  margin: 0.8em 0;
+  line-height: 1.7;
+}
+
+.markdown-preview ul, .markdown-preview ol {
+  margin: 0.8em 0;
+  padding-left: 2em;
+  line-height: 1.7;
+}
+
+.markdown-preview li {
+  margin: 0.3em 0;
+}
+
+.markdown-preview code {
+  background-color: rgba(76, 175, 80, 0.1);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+  font-size: 0.9em;
+  color: #c7254e;
+}
+
+.markdown-preview pre {
+  background-color: rgba(76, 175, 80, 0.1);
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  margin: 1em 0;
+  border-left: 4px solid #4caf50;
+}
+
+.markdown-preview pre code {
+  background-color: transparent;
+  padding: 0;
+  color: #333;
+}
+
+.markdown-preview blockquote {
+  border-left: 4px solid #4caf50;
+  padding-left: 1em;
+  margin: 1em 0;
+  color: #666;
+  font-style: italic;
+}
+
+.markdown-preview table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+
+.markdown-preview th, .markdown-preview td {
+  border: 1px solid #c8e6c9;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.markdown-preview th {
+  background-color: rgba(76, 175, 80, 0.15);
+  font-weight: bold;
+}
+
+.markdown-preview tr:nth-child(even) {
+  background-color: rgba(76, 175, 80, 0.05);
+}
+
+.markdown-preview a {
+  color: #1976d2;
+  text-decoration: none;
+  border-bottom: 1px solid #bbdefb;
+}
+
+.markdown-preview a:hover {
+  color: #0d47a1;
+  border-bottom-color: #0d47a1;
+}
+
+.markdown-preview hr {
+  border: none;
+  border-top: 2px solid #c8e6c9;
+  margin: 2em 0;
+}
+
+.markdown-preview strong {
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.markdown-preview em {
+  font-style: italic;
+  color: #555;
+}

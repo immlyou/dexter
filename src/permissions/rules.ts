@@ -47,7 +47,7 @@ export function parseRule(input: string): ShellRule | null {
   if (s === 'Bash') return { kind: 'toolwide', raw: 'Bash' };
   const m = /^Bash\((.*)\)$/s.exec(s);
   if (!m) return null;
-  const content = unescape(m[1]);
+  const content = unescape(m[1]!);
   if (content.endsWith(':*')) {
     const prefix = content.slice(0, -2).trim();
     const words = prefix.split(/\s+/).filter(Boolean);
@@ -82,7 +82,7 @@ export function matchSegment(seg: ParsedSegment, rule: ShellRule): boolean {
   const segW = segmentWords(seg);
   const ruleW = [...rule.words];
   // Compare the command word by basename so /usr/bin/rm matches a `rm` rule.
-  const ruleFirst = basename(ruleW[0]);
+  const ruleFirst = basename(ruleW[0]!);
   if (segW.length === 0) return false;
   if (ruleFirst !== segW[0]) return false;
   if (rule.kind === 'exact') {

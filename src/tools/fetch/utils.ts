@@ -5,11 +5,13 @@
  * markdown, persists binary downloads to disk, caches results, and applies a
  * user prompt to the content using a small, fast model.
  */
-import axios, { type AxiosResponse } from 'axios';
+import axios, { type AxiosResponse, type LookupAddressEntry } from 'axios';
 import { LRUCache } from 'lru-cache';
+import { isIP } from 'node:net';
 import { callLlm, getFastModel } from '../../model/llm.js';
 import { resolveProvider } from '../../providers.js';
 import { logger } from '../../utils/index.js';
+import { assertPublicHttpUrl, type LookupFn, resolvePublicHost } from '../browser/url-guard.js';
 import { isBinaryContentType, persistBinaryContent } from './binary-storage.js';
 import { makeSecondaryModelPrompt } from './prompt.js';
 
@@ -138,6 +140,27 @@ export function isPermittedRedirect(originalUrl: string, redirectUrl: string): b
   }
 }
 
+type AxiosLookup = (
+  hostname: string,
+  options: object,
+  cb: (err: Error | null, addresses: LookupAddressEntry[]) => void,
+) => void;
+
+/**
+ * Socket-level DNS hook for axios: the connection may only go to addresses that
+ * passed the public-IP check, so a second DNS answer (DNS rebinding) between
+ * the pre-flight check and connect cannot reach a private address.
+ */
+function pinnedLookup(lookup?: LookupFn): AxiosLookup {
+  return (hostname, _options, cb) => {
+    resolvePublicHost(hostname, lookup).then(
+      (addresses) =>
+        cb(null, addresses.map((address) => ({ address, family: isIP(address) === 6 ? 6 : 4 }))),
+      (error: Error) => cb(error, []),
+    );
+  };
+}
+
 export type RedirectInfo = {
   type: 'redirect';
   originalUrl: string;
@@ -146,24 +169,31 @@ export type RedirectInfo = {
 };
 
 /**
- * Fetch a URL while controlling redirects manually. Same-origin redirects that
- * pass `redirectChecker` are followed (up to MAX_REDIRECTS hops); cross-host
- * redirects are returned as RedirectInfo so the caller can surface them.
+ * Fetch a URL while controlling redirects manually. Every hop must be a public
+ * http(s) URL (url-guard), and the socket is pinned to the checked addresses.
+ * Same-origin redirects that pass `redirectChecker` are followed (up to
+ * MAX_REDIRECTS hops); cross-host redirects are returned as RedirectInfo so
+ * the caller can surface them. Environment proxies are bypassed on purpose:
+ * through a proxy the guard would check the proxy, not the destination.
  */
 export async function getWithPermittedRedirects(
   url: string,
   signal: AbortSignal,
   redirectChecker: (originalUrl: string, redirectUrl: string) => boolean,
   depth = 0,
+  lookup?: LookupFn,
 ): Promise<AxiosResponse<ArrayBuffer> | RedirectInfo> {
   if (depth > MAX_REDIRECTS) {
     throw new Error(`Too many redirects (exceeded ${MAX_REDIRECTS})`);
   }
+  await assertPublicHttpUrl(url, lookup);
   try {
     return await axios.get<ArrayBuffer>(url, {
       signal,
       timeout: FETCH_TIMEOUT_MS,
       maxRedirects: 0,
+      proxy: false,
+      lookup: pinnedLookup(lookup),
       responseType: 'arraybuffer',
       maxContentLength: MAX_HTTP_CONTENT_LENGTH,
       headers: {
@@ -186,8 +216,10 @@ export async function getWithPermittedRedirects(
       const redirectUrl = new URL(redirectLocation, url).toString();
 
       if (redirectChecker(url, redirectUrl)) {
-        return getWithPermittedRedirects(redirectUrl, signal, redirectChecker, depth + 1);
+        return getWithPermittedRedirects(redirectUrl, signal, redirectChecker, depth + 1, lookup);
       }
+      // Never surface a private target for the model to re-fetch.
+      await assertPublicHttpUrl(redirectUrl, lookup);
       return {
         type: 'redirect',
         originalUrl: url,
@@ -232,6 +264,7 @@ export type FetchedContent = {
 export async function getURLMarkdownContent(
   url: string,
   abortController: AbortController,
+  lookup?: LookupFn,
 ): Promise<FetchedContent | RedirectInfo> {
   if (!validateURL(url)) {
     throw new Error('Invalid URL');
@@ -267,6 +300,8 @@ export async function getURLMarkdownContent(
     upgradedUrl,
     abortController.signal,
     isPermittedRedirect,
+    0,
+    lookup,
   );
 
   if (isRedirectInfo(response)) {

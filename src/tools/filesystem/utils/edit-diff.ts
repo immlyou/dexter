@@ -93,7 +93,7 @@ export function generateDiffString(
   let firstChangedLine: number | undefined;
 
   for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
+    const part = parts[i]!;
     const raw = part.value.split('\n');
     if (raw[raw.length - 1] === '') {
       raw.pop();

@@ -1,12 +1,12 @@
 import { AIMessage, AIMessageChunk, SystemMessage, HumanMessage, ToolMessage, type BaseMessage } from '@langchain/core/messages';
-import { StructuredToolInterface } from '@langchain/core/tools';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import { callLlmWithMessages, streamLlmWithMessages } from '../model/llm.js';
-import { getTools, getToolConcurrencyMap } from '../tools/registry.js';
+import { filterForWebMode, getToolRegistry } from '../tools/registry.js';
 import { buildSystemPrompt, loadSoulDocument, loadRulesDocument } from './prompts.js';
 import { extractTextContent, hasToolCalls } from '../utils/ai-message.js';
 import { InMemoryChatHistory } from '../utils/in-memory-chat-history.js';
 import { estimateTokens, getAutoCompactThreshold, KEEP_TOOL_USES } from '../utils/tokens.js';
-import { exceedsSizeCap, persistLargeResult, buildPersistedContent } from '../utils/tool-result-storage.js';
+import { exceedsSizeCap, capLargeResult } from '../utils/tool-result-storage.js';
 import { enforceResultBudget } from '../utils/tool-result-budget.js';
 import { formatUserFacingError, isContextOverflowError } from '../utils/errors.js';
 import type { AgentConfig, AgentEvent, CompactionEvent, ContextClearedEvent, MicrocompactEvent, QueueDrainEvent, StreamMode, StreamProgressEvent, TokenUsage } from '../agent/types.js';
@@ -47,6 +47,7 @@ export class Agent {
   private readonly signal?: AbortSignal;
   private readonly memoryEnabled: boolean;
   private readonly messageQueue?: MessageQueue;
+  private readonly disposers: Array<() => Promise<void>>;
   private compactionFailures: number = 0;
 
   private constructor(
@@ -54,6 +55,7 @@ export class Agent {
     tools: StructuredToolInterface[],
     systemPrompt: string,
     concurrencyMap: Map<string, boolean>,
+    disposers: Array<() => Promise<void>> = [],
   ) {
     this.model = config.model ?? DEFAULT_MODEL;
     this.maxIterations = config.maxIterations ?? DEFAULT_MAX_ITERATIONS;
@@ -72,23 +74,26 @@ export class Agent {
     this.signal = config.signal;
     this.memoryEnabled = config.memoryEnabled ?? true;
     this.messageQueue = config.messageQueue;
+    this.disposers = disposers;
   }
 
   static async create(config: AgentConfig = {}): Promise<Agent> {
     const model = config.model ?? DEFAULT_MODEL;
-    const allTools = getTools(model);
-    let tools = config.toolAllowlist
-      ? allTools.filter(t => config.toolAllowlist!.includes(t.name))
-      : allTools;
+    // Second line of defense: re-apply the web allow-list here in case the registry changes
+    let registry = filterForWebMode(getToolRegistry(model));
+    registry = config.toolAllowlist
+      ? registry.filter(t => config.toolAllowlist!.includes(t.name))
+      : registry;
     // CLI-only tools (interactive prompts) are dropped on non-CLI channels
     // (WhatsApp/gateway) and in headless runs, where there is no user at a keyboard.
     const isCli = !config.channel || config.channel === 'cli';
     if (!isCli) {
-      tools = tools.filter(t => !CLI_ONLY_TOOLS.has(t.name));
+      registry = registry.filter(t => !CLI_ONLY_TOOLS.has(t.name));
     }
-    // The concurrency map is a name→bool lookup; extra entries are harmless since
-    // toolMap only holds the (possibly filtered) tools above.
-    const concurrencyMap = getToolConcurrencyMap(model);
+    const tools = registry.map(t => t.tool);
+    const concurrencyMap = new Map(registry.map(t => [t.name, t.concurrencySafe]));
+    // Per-run resources (e.g. the browser context) are released when run() ends.
+    const disposers = registry.flatMap(t => (t.dispose ? [t.dispose] : []));
 
     let systemPrompt: string;
     if (config.systemPromptOverride) {
@@ -119,13 +124,25 @@ export class Agent {
         rulesContent,
       );
     }
-    return new Agent(config, tools, systemPrompt, concurrencyMap);
+    return new Agent(config, tools, systemPrompt, concurrencyMap, disposers);
+  }
+
+  /**
+   * Run the agent, releasing per-run tool resources (e.g. browser context) when the
+   * run finishes, fails, or the consumer stops iterating.
+   */
+  async *run(query: string, inMemoryHistory?: InMemoryChatHistory): AsyncGenerator<AgentEvent> {
+    try {
+      yield* this.runLoop(query, inMemoryHistory);
+    } finally {
+      await Promise.allSettled(this.disposers.map((dispose) => dispose()));
+    }
   }
 
   /**
    * Run the agent with streaming, concurrent tools, and microcompact.
    */
-  async *run(query: string, inMemoryHistory?: InMemoryChatHistory): AsyncGenerator<AgentEvent> {
+  private async *runLoop(query: string, inMemoryHistory?: InMemoryChatHistory): AsyncGenerator<AgentEvent> {
     const startTime = Date.now();
 
     if (this.tools.length === 0) {
@@ -223,13 +240,12 @@ export class Agent {
       // Execute tools concurrently where safe, collect ToolMessages by ID
       let { toolMessages, denied } = yield* this.executeToolsAndCollectMessages(response, ctx);
 
-      // Cap large results (persist to disk, inject preview)
+      // Cap large results (CLI: persist + preview; web: in-memory truncation)
       toolMessages = toolMessages.map(tm => {
         const content = typeof tm.content === 'string' ? tm.content : JSON.stringify(tm.content);
         if (exceedsSizeCap(content)) {
-          const { preview, filePath } = persistLargeResult(tm.name ?? 'unknown', tm.tool_call_id, content);
           return new ToolMessage({
-            content: buildPersistedContent(filePath, preview, content.length),
+            content: capLargeResult(tm.tool_call_id, content),
             tool_call_id: tm.tool_call_id,
             name: tm.name,
           });
@@ -535,7 +551,7 @@ export class Agent {
     const roundsToRemove = Math.max(0, rounds.length - keepRounds);
     if (roundsToRemove === 0) return 0;
 
-    const removeEnd = rounds[roundsToRemove - 1].end;
+    const removeEnd = rounds[roundsToRemove - 1]!.end;
     const removed = removeEnd - roundStartIndex;
     messages.splice(roundStartIndex, removed);
     return removed;
@@ -546,7 +562,7 @@ export class Agent {
    */
   private compactMessages(messages: BaseMessage[], summary: string, query: string): BaseMessage[] {
     return [
-      messages[0], // SystemMessage
+      messages[0]!, // SystemMessage
       new HumanMessage(`${query}\n\n${summary}`),
     ];
   }

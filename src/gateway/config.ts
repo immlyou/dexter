@@ -195,7 +195,7 @@ export function resolveWhatsAppAccount(
   cfg: GatewayConfig,
   accountId: string,
 ): WhatsAppAccountConfig {
-  const account = cfg.channels.whatsapp.accounts?.[accountId] ?? {};
+  const account: Partial<z.infer<typeof WhatsAppAccountSchema>> = cfg.channels.whatsapp.accounts?.[accountId] ?? {};
   const authDir = account.authDir ?? dexterPath('credentials', 'whatsapp', accountId);
   const rawAllowFrom = account.allowFrom ?? cfg.channels.whatsapp.allowFrom ?? [];
   const allowFrom = Array.from(

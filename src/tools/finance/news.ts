@@ -25,7 +25,7 @@ export const getCompanyNews = new DynamicStructuredTool({
       ticker: input.ticker?.trim().toUpperCase(),
       limit: Math.min(input.limit, 10),
     };
-    const { data, url } = await api.get('/news', params, { cacheable: true, ttlMs: TTL_15M });
-    return formatToolResult((data.news as unknown[]) || [], [url]);
+    const { data, url, warnings } = await api.get('/news', params, { cacheable: true, ttlMs: TTL_15M });
+    return formatToolResult((data.news as unknown[]) || [], [url], warnings);
   },
 });

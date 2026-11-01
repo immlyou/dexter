@@ -40,7 +40,7 @@ export function parseMarkdownTable(tableText: string): { headers: string[]; rows
   if (lines.length < 2) return null;
   
   // Parse header line
-  const headerLine = lines[0];
+  const headerLine = lines[0]!;
   if (!headerLine.includes('|')) return null;
   
   const headers = headerLine
@@ -65,7 +65,7 @@ export function parseMarkdownTable(tableText: string): { headers: string[]; rows
   // Parse data rows
   const rows: string[][] = [];
   for (let i = 2; i < lines.length; i++) {
-    const line = lines[i];
+    const line = lines[i]!;
     if (!line.includes('|')) continue;
     
     const cells = line
@@ -94,7 +94,7 @@ export function renderBoxTable(headers: string[], rows: string[][]): string {
   for (const row of rows) {
     for (let i = 0; i < row.length; i++) {
       if (i < colWidths.length) {
-        colWidths[i] = Math.max(colWidths[i], row[i].length);
+        colWidths[i] = Math.max(colWidths[i]!, row[i]!.length);
       }
     }
   }
@@ -130,7 +130,7 @@ export function renderBoxTable(headers: string[], rows: string[][]): string {
   
   // Header row
   const headerRow = BOX.vertical + 
-    headers.map((h, i) => ` ${padCell(h, colWidths[i], false)} `).join(BOX.vertical) + 
+    headers.map((h, i) => ` ${padCell(h, colWidths[i]!, false)} `).join(BOX.vertical) + 
     BOX.vertical;
   lines.push(headerRow);
   
@@ -145,7 +145,7 @@ export function renderBoxTable(headers: string[], rows: string[][]): string {
     const dataRow = BOX.vertical + 
       colWidths.map((w, i) => {
         const value = row[i] || '';
-        return ` ${padCell(value, w, alignRight[i])} `;
+        return ` ${padCell(value, w, alignRight[i]!)} `;
       }).join(BOX.vertical) + 
       BOX.vertical;
     lines.push(dataRow);

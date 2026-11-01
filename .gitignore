@@ -61,3 +61,6 @@ coverage.json
 
 # Scratchpad files
 scratchpads/*
+
+# Agent tooling state (any directory level)
+.omc/

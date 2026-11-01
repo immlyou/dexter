@@ -6,9 +6,9 @@ export function findPrevWordStart(text: string, pos: number): number {
   if (pos <= 0) return 0;
   let i = pos - 1;
   // Skip non-word chars
-  while (i > 0 && !/\w/.test(text[i])) i--;
+  while (i > 0 && !/\w/.test(text[i]!)) i--;
   // Move to word start
-  while (i > 0 && /\w/.test(text[i - 1])) i--;
+  while (i > 0 && /\w/.test(text[i - 1]!)) i--;
   return i;
 }
 
@@ -21,9 +21,9 @@ export function findNextWordEnd(text: string, pos: number): number {
   if (pos >= len) return len;
   let i = pos;
   // Skip non-word chars
-  while (i < len && !/\w/.test(text[i])) i++;
+  while (i < len && !/\w/.test(text[i]!)) i++;
   // Move to word end
-  while (i < len && /\w/.test(text[i])) i++;
+  while (i < len && /\w/.test(text[i]!)) i++;
   return i;
 }
 
@@ -39,7 +39,7 @@ export function getLineAndColumn(text: string, pos: number): { line: number; col
   const lines = beforeCursor.split('\n');
   return {
     line: lines.length - 1,
-    column: lines[lines.length - 1].length,
+    column: lines[lines.length - 1]!.length,
   };
 }
 
@@ -51,7 +51,7 @@ export function getCursorPosition(text: string, line: number, column: number): n
   const lines = text.split('\n');
   let pos = 0;
   for (let i = 0; i < line && i < lines.length; i++) {
-    pos += lines[i].length + 1; // +1 for newline
+    pos += lines[i]!.length + 1; // +1 for newline
   }
   const targetLine = lines[line] || '';
   return pos + Math.min(column, targetLine.length);

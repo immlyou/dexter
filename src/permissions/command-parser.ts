@@ -245,7 +245,7 @@ function lex(input: string): { tokens: Token[]; unknown: boolean; reason?: strin
       // fd-duplication (`>&1`, `>&-`): redirects a descriptor, not a file write.
       if (s[i] === '&' && /[0-9-]/.test(s[i + 1] ?? '')) {
         i += 1;
-        while (i < s.length && /[0-9-]/.test(s[i])) i += 1;
+        while (i < s.length && /[0-9-]/.test(s[i]!)) i += 1;
         continue;
       }
       tokens.push({ kind: 'op', text });
@@ -272,7 +272,7 @@ function lex(input: string): { tokens: Token[]; unknown: boolean; reason?: strin
       // fd-duplication (`<&3`): not a write.
       if (s[i] === '&' && /[0-9-]/.test(s[i + 1] ?? '')) {
         i += 1;
-        while (i < s.length && /[0-9-]/.test(s[i])) i += 1;
+        while (i < s.length && /[0-9-]/.test(s[i]!)) i += 1;
         continue;
       }
       tokens.push({ kind: 'op', text: '<' });
@@ -326,7 +326,7 @@ function buildSegment(tokens: Token[]): ParsedSegment {
   const words: string[] = [];
 
   for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
+    const t = tokens[i]!;
     if (t.kind === 'op') {
       if (t.text === '>' || t.text === '>>' || t.text === '&>') {
         hasWriteRedirect = true;
@@ -343,8 +343,8 @@ function buildSegment(tokens: Token[]): ParsedSegment {
 
   // Strip leading `VAR=value` env assignments.
   let idx = 0;
-  while (idx < words.length && ENV_ASSIGNMENT.test(words[idx])) {
-    env.push(words[idx]);
+  while (idx < words.length && ENV_ASSIGNMENT.test(words[idx]!)) {
+    env.push(words[idx]!);
     idx += 1;
   }
 
@@ -357,10 +357,10 @@ function buildSegment(tokens: Token[]): ParsedSegment {
     if (w === undefined) break;
     if (!WRAPPERS.has(basename(w))) break;
     idx += 1;
-    while (idx < words.length && (WRAPPER_ARG.test(words[idx]) || ENV_ASSIGNMENT.test(words[idx]))) {
+    while (idx < words.length && (WRAPPER_ARG.test(words[idx]!) || ENV_ASSIGNMENT.test(words[idx]!))) {
       // Keep env assignments visible to the deny floor: `env LD_PRELOAD=x ls` must
       // not hide LD_PRELOAD just because it followed the `env` wrapper.
-      if (ENV_ASSIGNMENT.test(words[idx])) env.push(words[idx]);
+      if (ENV_ASSIGNMENT.test(words[idx]!)) env.push(words[idx]!);
       idx += 1;
     }
   }

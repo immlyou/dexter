@@ -51,12 +51,12 @@ function readUtf8ByteRange(
   requestedLimit: number = MAX_BYTE_RANGE_BYTES,
 ): { content: string; start: number; end: number } {
   let start = Math.min(requestedOffset, fileBuffer.length);
-  while (start < fileBuffer.length && start > 0 && (fileBuffer[start] & 0xc0) === 0x80) {
+  while (start < fileBuffer.length && start > 0 && (fileBuffer[start]! & 0xc0) === 0x80) {
     start++;
   }
 
   let end = Math.min(start + requestedLimit, fileBuffer.length);
-  while (end < fileBuffer.length && end > start && (fileBuffer[end] & 0xc0) === 0x80) {
+  while (end < fileBuffer.length && end > start && (fileBuffer[end]! & 0xc0) === 0x80) {
     end--;
   }
 

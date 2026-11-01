@@ -143,7 +143,8 @@ export function createGetInsiderTrades(model: string): DynamicStructuredTool {
         .slice(0, input.limit);
       return formatToolResult(
         stripFieldsDeep(trades, REDUNDANT_INSIDER_FIELDS),
-        results.map(r => r.url)
+        results.map(r => r.url),
+        results.flatMap(r => r.warnings ?? []),
       );
     },
   });
@@ -160,7 +161,7 @@ export const getInsiderNames = new DynamicStructuredTool({
   description: `Lists the exact insider names on file for a given company ticker, as recorded in SEC filings (e.g. 'HUANG JEN HSUN'). Use this to see which executives, directors, and other insiders have filings for a company, or to resolve a person's common name to the exact spelling accepted by the get_insider_trades name filter.`,
   schema: InsiderNamesInputSchema,
   func: async (input) => {
-    const { data, url } = await api.get('/insider-trades/names/', { ticker: input.ticker.toUpperCase() }, { cacheable: true, ttlMs: TTL_1H });
-    return formatToolResult(data.names || [], [url]);
+    const { data, url, warnings } = await api.get('/insider-trades/names/', { ticker: input.ticker.toUpperCase() }, { cacheable: true, ttlMs: TTL_1H });
+    return formatToolResult(data.names || [], [url], warnings);
   },
 });

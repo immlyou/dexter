@@ -1,12 +1,13 @@
-import { StructuredToolInterface } from '@langchain/core/tools';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import { createGetFinancials, createGetMarketData, createReadFilings, createScreenStocks } from './finance/index.js';
 import { exaSearch, perplexitySearch, tavilySearch, langSearch, WEB_SEARCH_DESCRIPTION, xSearchTool, X_SEARCH_DESCRIPTION } from './search/index.js';
 import { createWebSearchTool, type WebSearchProvider } from './search/web-search.js';
 import { getSetting } from '../utils/config.js';
+import { isWebMode } from '../utils/web-mode.js';
 import type { SearchProviderId } from '../utils/env.js';
 import { skillTool, SKILL_TOOL_DESCRIPTION } from './skill.js';
 import { createWebFetch, WEB_FETCH_DESCRIPTION } from './fetch/web-fetch.js';
-import { browserTool, BROWSER_DESCRIPTION } from './browser/browser.js';
+import { createBrowserTool, BROWSER_DESCRIPTION } from './browser/browser.js';
 import { readFileTool, READ_FILE_DESCRIPTION } from './filesystem/read-file.js';
 import { writeFileTool, WRITE_FILE_DESCRIPTION } from './filesystem/write-file.js';
 import { editFileTool, EDIT_FILE_DESCRIPTION } from './filesystem/edit-file.js';
@@ -36,6 +37,42 @@ export interface RegisteredTool {
   compactDescription: string;
   /** Whether this tool can safely execute concurrently with other concurrent-safe tools. */
   concurrencySafe: boolean;
+  /** Releases per-run resources held by the tool (e.g. browser context) */
+  dispose?: () => Promise<void>;
+}
+
+export { isWebMode };
+
+/**
+ * The browser tool can reach arbitrary URLs, so it is disabled when Dexter runs
+ * behind the multi-user web backend.
+ */
+export function isBrowserToolEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return !isWebMode(env);
+}
+
+/**
+ * Tools exposed to untrusted web users. Everything else is CLI-only: it can reach
+ * arbitrary URLs (browser, web_fetch), touch the server's filesystem or shell
+ * (read/write/edit_file, bash), share state across users (memory, heartbeat, cron),
+ * needs a local user (ask_user_question), or fans out unbounded paid work (spawn_subagent).
+ */
+export const WEB_MODE_TOOLS: ReadonlySet<string> = new Set([
+  'get_financials',
+  'get_market_data',
+  'read_filings',
+  'stock_screener',
+  'web_search',
+  'x_search',
+  'skill',
+]);
+
+/** In web mode, keep only WEB_MODE_TOOLS; applied by the registry and again by Agent.create. */
+export function filterForWebMode<T extends { name: string }>(
+  tools: T[],
+  env: Record<string, string | undefined> = process.env,
+): T[] {
+  return isWebMode(env) ? tools.filter((t) => WEB_MODE_TOOLS.has(t.name)) : tools;
 }
 
 /**
@@ -94,13 +131,6 @@ export function getToolRegistry(model: string): RegisteredTool[] {
       tool: createWebFetch(model),
       description: WEB_FETCH_DESCRIPTION,
       compactDescription: 'Fetch a URL and answer a prompt about its content (HTML→markdown, fast-model summarized).',
-      concurrencySafe: true,
-    },
-    {
-      name: 'browser',
-      tool: browserTool,
-      description: BROWSER_DESCRIPTION,
-      compactDescription: 'JavaScript-rendered pages and interactive navigation. Actions: navigate, snapshot, act, read, close.',
       concurrencySafe: true,
     },
     {
@@ -228,7 +258,20 @@ export function getToolRegistry(model: string): RegisteredTool[] {
     });
   }
 
-  return tools;
+  if (isBrowserToolEnabled()) {
+    // Fresh browser session per registry call, so each agent run gets isolated state
+    const browser = createBrowserTool();
+    tools.push({
+      name: 'browser',
+      tool: browser.tool,
+      description: BROWSER_DESCRIPTION,
+      compactDescription: 'JavaScript-rendered pages and interactive navigation. Actions: navigate, snapshot, act, read, close.',
+      concurrencySafe: true,
+      dispose: browser.dispose,
+    });
+  }
+
+  return filterForWebMode(tools);
 }
 
 /**

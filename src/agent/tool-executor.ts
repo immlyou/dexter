@@ -1,6 +1,6 @@
 import { AIMessage } from '@langchain/core/messages';
 import type { ToolCall } from '@langchain/core/messages/tool';
-import { StructuredToolInterface } from '@langchain/core/tools';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import { createProgressChannel } from '../utils/progress-channel.js';
 import { all } from '../utils/concurrency.js';
 import type {

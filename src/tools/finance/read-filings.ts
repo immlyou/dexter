@@ -1,6 +1,6 @@
-import { DynamicStructuredTool, StructuredToolInterface } from '@langchain/core/tools';
+import { DynamicStructuredTool, type StructuredToolInterface } from '@langchain/core/tools';
 import type { RunnableConfig } from '@langchain/core/runnables';
-import { AIMessage, ToolCall } from '@langchain/core/messages';
+import { AIMessage, type ToolCall } from '@langchain/core/messages';
 import { z } from 'zod';
 import { callLlm } from '../../model/llm.js';
 import { formatToolResult } from '../types.js';
@@ -193,24 +193,42 @@ export function createReadFilings(model: string): DynamicStructuredTool {
 
       // Steps 2-3: Fetch filings metadata + canonical item types in parallel
       onProgress?.(`Fetching ${filingPlan.filing_types.join(', ')} filings for ${filingPlan.ticker}...`);
-      let filingsResult: { data: unknown[]; sourceUrls: string[] };
+      let filingsResult: { data: unknown[]; sourceUrls: string[]; warnings: string[] };
       let itemTypes: FilingItemTypes;
+      // Promise.all rejects on the first failure but leaves its sibling running;
+      // the group signal cancels whatever is still in flight once either branch
+      // fails or the step settles.
+      const group = new AbortController();
+      const groupSignal = config?.signal ? AbortSignal.any([config.signal, group.signal]) : group.signal;
+      const failFast = <T>(promise: Promise<T>): Promise<T> =>
+        promise.catch((error: unknown) => {
+          group.abort(error);
+          throw error;
+        });
       try {
-        const [filingsRaw, fetchedItemTypes] = await Promise.all([
-          getFilings.invoke({
-            ticker: filingPlan.ticker,
-            filing_type: filingPlan.filing_types,
-            limit: filingLimit,
-          }),
-          getFilingItemTypes(),
-        ]);
+        const [filingsRaw, fetchedItemTypes] = await withTimeout(
+          () => Promise.all([
+            failFast(getFilings.invoke({
+              ticker: filingPlan.ticker,
+              filing_type: filingPlan.filing_types,
+              limit: filingLimit,
+            })),
+            failFast(getFilingItemTypes()),
+          ]),
+          SUB_TOOL_TIMEOUT_MS,
+          'filings metadata',
+          groupSignal,
+        );
         const parsedFilings = JSON.parse(
           typeof filingsRaw === 'string' ? filingsRaw : JSON.stringify(filingsRaw)
-        ) as { data?: unknown; sourceUrls?: unknown };
+        ) as { data?: unknown; sourceUrls?: unknown; warnings?: unknown };
         filingsResult = {
           data: Array.isArray(parsedFilings.data) ? parsedFilings.data : [],
           sourceUrls: Array.isArray(parsedFilings.sourceUrls)
             ? parsedFilings.sourceUrls.filter((u): u is string => typeof u === 'string')
+            : [],
+          warnings: Array.isArray(parsedFilings.warnings)
+            ? parsedFilings.warnings.filter((w): w is string => typeof w === 'string')
             : [],
         };
         itemTypes = fetchedItemTypes;
@@ -227,6 +245,8 @@ export function createReadFilings(model: string): DynamicStructuredTool {
           },
           []
         );
+      } finally {
+        group.abort();
       }
 
       if (filingsResult.data.length === 0) {
@@ -237,7 +257,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
             filing_type: filingPlan.filing_types,
             limit: filingLimit,
           },
-        }, filingsResult.sourceUrls);
+        }, filingsResult.sourceUrls, filingsResult.warnings);
       }
 
       const filingCount = filingsResult.data.length;
@@ -256,7 +276,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
         return formatToolResult({ 
           error: 'Failed to select filings to read',
           availableFilings: filingsResult.data,
-        }, filingsResult.sourceUrls || []);
+        }, filingsResult.sourceUrls || [], filingsResult.warnings);
       }
 
       const limitedToolCalls = step2ToolCalls.slice(0, 3);
@@ -270,7 +290,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
             if (!tool) {
               throw new Error(`Tool '${tc.name}' not found`);
             }
-            const rawResult = await withTimeout(tool.invoke(tc.args), SUB_TOOL_TIMEOUT_MS, tc.name);
+            const rawResult = await withTimeout(() => tool.invoke(tc.args), SUB_TOOL_TIMEOUT_MS, tc.name, config?.signal);
             const result = typeof rawResult === 'string' ? rawResult : JSON.stringify(rawResult);
             const parsed = JSON.parse(result);
             return {
@@ -278,6 +298,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
               args: tc.args,
               data: parsed.data,
               sourceUrls: parsed.sourceUrls || [],
+              warnings: Array.isArray(parsed.warnings) ? (parsed.warnings as string[]) : [],
               error: null,
             };
           } catch (error) {
@@ -286,6 +307,7 @@ export function createReadFilings(model: string): DynamicStructuredTool {
               args: tc.args,
               data: null,
               sourceUrls: [],
+              warnings: [] as string[],
               error: error instanceof Error ? error.message : String(error),
             };
           }
@@ -315,7 +337,11 @@ export function createReadFilings(model: string): DynamicStructuredTool {
         }));
       }
 
-      return formatToolResult(combinedData, allUrls);
+      const warnings = [
+        ...filingsResult.warnings.map((w) => `get_filings: ${w}`),
+        ...results.flatMap((r) => r.warnings.map((w) => `${r.tool}: ${w}`)),
+      ];
+      return formatToolResult(combinedData, allUrls, warnings);
     },
   });
 }
